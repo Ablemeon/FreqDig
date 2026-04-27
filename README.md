@@ -1,3 +1,4 @@
+
 # FreqDig
 
 [中文](#中文) | [English](#english)
@@ -15,7 +16,7 @@ Current version: `0.0.1`
 FreqDig 是一个本地运行的轻量级频响曲线分析工具，用于导入、查看、比较和导出音频测量曲线。它适合耳机、扬声器、测量麦克风、目标曲线和多组频响数据的快速对比分析。
 
 项目使用原生 HTML/CSS/JavaScript 实现，不依赖前端框架。页面通过本地 Node.js 静态服务器运行，避免直接打开 HTML 时遇到浏览器模块加载限制。
-
+<img width="2549" height="1403" alt="ScreenShot" src="https://github.com/user-attachments/assets/82db14d3-f115-4fd9-a0be-0af6ab180bba" />
 任何二次开发的行为都是被欢迎的，包括但不限于：
 
 - 新增功能
