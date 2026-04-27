@@ -1,0 +1,244 @@
+﻿<!DOCTYPE html>
+<!--
+  FreqDig
+  Copyright (c) 2026 Diggercat
+  SPDX-License-Identifier: MIT
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FreqDig</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>FreqDig</h1>
+      <button id="mobileMenuToggle" class="mobile-menu-toggle" type="button" aria-label="打开工具菜单" aria-expanded="false">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <div class="toolbar">
+        <label class="file-button primary">
+          导入曲线
+          <input id="curveFiles" type="file" accept=".csv,.txt,.frd,.dat,.mdat" multiple>
+        </label>
+        <label class="file-button">
+          导入目标
+          <input id="targetFile" type="file" accept=".csv,.txt,.frd,.dat,.mdat">
+        </label>
+        <select id="mode">
+          <option value="raw">原始曲线</option>
+          <option value="reference">相对基准差异</option>
+          <option value="target">相对目标偏差</option>
+        </select>
+        <select id="reference"></select>
+        <button id="saveProject" type="button">保存工程</button>
+        <label class="file-button">
+          加载工程
+          <input id="projectFile" type="file" accept=".json,application/json">
+        </label>
+        <button id="loadDemo" type="button">示例数据</button>
+        <div class="export-split">
+          <button id="exportPng" class="export-main" type="button">导出 PNG</button>
+          <button class="export-arrow" type="button" aria-label="更多 PNG 导出选项" aria-haspopup="true">
+            <span aria-hidden="true"></span>
+          </button>
+          <div class="export-menu" role="menu">
+            <button id="exportTransparentPng" type="button" role="menuitem">导出透明 PNG</button>
+          </div>
+        </div>
+        <button id="exportSvg" type="button">导出 SVG</button>
+        <label class="toolbar-check" title="导出时在图表下方附加偏差概要">
+          <input id="exportDeviationSummary" type="checkbox">
+          <span>导出偏差概要</span>
+        </label>
+      </div>
+    </header>
+
+    <main>
+      <aside>
+        <p class="panel-title">曲线</p>
+        <div class="sidebar-control">
+          <label for="tiltInput">斜率</label>
+          <div class="tilt-control">
+            <div class="tilt-presets" aria-label="斜率预设">
+              <button type="button" data-tilt="-4">-4</button>
+              <button type="button" data-tilt="-1">-1</button>
+              <button type="button" data-tilt="0">0</button>
+              <button type="button" data-tilt="1">+1</button>
+              <button type="button" data-tilt="4">+4</button>
+            </div>
+            <div class="number-field">
+              <button id="tiltDown" class="step-button" type="button" aria-label="减小斜率">-</button>
+              <input id="tiltInput" type="number" value="0" step="0.1" inputmode="decimal">
+              <button id="tiltUp" class="step-button" type="button" aria-label="增大斜率">+</button>
+              <span>dB/oct</span>
+            </div>
+          </div>
+        </div>
+        <label class="check-control">
+          <input id="curveTilt" type="checkbox" checked>
+          <span>导入曲线应用斜率</span>
+        </label>
+        <label class="check-control">
+          <input id="targetTilt" type="checkbox">
+          <span>目标曲线应用斜率</span>
+        </label>
+        <label class="check-control">
+          <input id="alignTarget" type="checkbox">
+          <span>对齐/归一化包含目标曲线</span>
+        </label>
+        <label class="check-control">
+          <input id="bandIndicator" type="checkbox">
+          <span>频带指示</span>
+        </label>
+        <div class="sidebar-actions">
+          <button id="spreadCurves" type="button">纵向分布</button>
+          <button id="normalizeCurves" type="button">归一化</button>
+          <select id="alignFrequency" aria-label="对齐频点">
+            <option value="100">100 Hz</option>
+            <option value="250">250 Hz</option>
+            <option value="500">500 Hz</option>
+            <option value="1000" selected>1 kHz</option>
+            <option value="2000">2 kHz</option>
+            <option value="3000">3 kHz</option>
+            <option value="5000">5 kHz</option>
+            <option value="8000">8 kHz</option>
+            <option value="10000">10 kHz</option>
+          </select>
+          <button id="alignCurves" type="button">对齐</button>
+        </div>
+        <div id="curveList" class="curve-list"></div>
+        <p class="hint">CSV 支持 <strong>frequency_hz, level_db</strong> 表头，也支持逗号、Tab、分号或空格分隔的两列数字。频率轴使用对数坐标。</p>
+      </aside>
+
+      <div class="workspace">
+        <section class="chart-panel">
+          <div class="chart-head">
+            <div>
+              <div id="chartTitle" class="chart-title">原始曲线</div>
+              <div id="chartSubtitle" class="chart-subtitle">20 Hz - 20 kHz / dB</div>
+            </div>
+          </div>
+          <div class="canvas-wrap is-zoom-hidden">
+            <div class="chart-zoom-control chart-zoom-y" title="纵坐标缩放">
+              <span id="yZoomMaxLabel" class="zoom-end-label zoom-end-top">+</span>
+              <input id="yZoomSlider" type="range" min="0" max="100" value="0" aria-label="纵坐标缩放">
+              <span id="yZoomMinLabel" class="zoom-end-label zoom-end-bottom">-</span>
+              <span id="yZoomTip" class="zoom-tip zoom-tip-y" hidden></span>
+            </div>
+            <div class="chart-zoom-control chart-zoom-x" title="横坐标缩放">
+              <span id="xZoomMinLabel" class="zoom-end-label zoom-end-left">20 Hz</span>
+              <div class="dual-range">
+                <div id="xRangeTrack" class="dual-range-track"></div>
+                <input id="xMinSlider" type="range" min="0" max="10000" value="0" aria-label="横坐标下限">
+                <input id="xMaxSlider" type="range" min="0" max="10000" value="10000" aria-label="横坐标上限">
+              </div>
+              <span id="xZoomMaxLabel" class="zoom-end-label zoom-end-right">20 kHz</span>
+              <span id="xZoomTip" class="zoom-tip zoom-tip-x" hidden></span>
+            </div>
+            <div class="chart-band-controls" aria-label="频段缩放范围">
+              <button type="button" data-band-range="20,80">1 Sub Bass</button>
+              <button type="button" data-band-range="80,300">2 Bass</button>
+              <button type="button" data-band-range="300,2000">3 Mid</button>
+              <button type="button" data-band-range="2000,6000">4 High-mid</button>
+              <button type="button" data-band-range="6000,20000">5 High</button>
+            </div>
+            <button id="zoomControlsToggle" class="chart-zoom-toggle" type="button" title="显示缩放控件" aria-label="显示缩放控件" aria-pressed="false">
+              <span class="font-icon" aria-hidden="true">&#8981;</span>
+            </button>
+            <button id="resetAxisView" class="chart-reset-button" type="button" title="复位图表缩放" aria-label="复位图表缩放">
+              <span class="font-icon" aria-hidden="true">&#8634;</span>
+            </button>
+            <button id="globalSmoothing" class="chart-smoothing-button" type="button" title="全局平滑" aria-label="全局平滑" aria-pressed="false">
+              <span class="font-icon" aria-hidden="true">&#128640;</span>
+            </button>
+            <canvas id="chart"></canvas>
+            <div id="bandIndicatorOverlay" class="band-indicator-overlay" hidden></div>
+            <div id="chartTooltip" class="chart-tooltip" hidden></div>
+            <div id="emptyState" class="empty-state">拖入 CSV/TXT 文件或点击上方按钮导入曲线。若需要导入目标曲线，请点击上方“导入目标”按钮。</div>
+          </div>
+        </section>
+
+        <section class="metrics">
+          <p class="panel-title">偏差摘要</p>
+          <div class="metric-grid">
+            <div class="metric">
+              <div class="metric-label">平均绝对偏差</div>
+              <div id="avgDeviation" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">最大绝对偏差</div>
+              <div id="maxDeviation" class="metric-value">-</div>
+            </div>
+            <div id="metricAnimationStage" class="metric-animation-stage" aria-hidden="true"></div>
+            <div class="metric">
+              <div class="metric-label">超低频 20-80 Hz</div>
+              <div id="subBassDeviation" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">低频 80-300 Hz</div>
+              <div id="bassDeviation" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">中频 300-2000 Hz</div>
+              <div id="midDeviation" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">中高频 2k-6k Hz</div>
+              <div id="highMidDeviation" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">高频 6k-20k Hz</div>
+              <div id="highDeviation" class="metric-value">-</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <div class="footer-copy">
+        <span>&copy; 2026 FreqDig. All rights reserved by Diggercat.</span>
+        <span>Powered by DiggerEngine</span>
+      </div>
+      <button id="easterEggToggle" class="easter-egg-toggle is-active" type="button" title="Toggle easter egg" aria-label="Toggle easter egg" aria-pressed="true">
+        <span class="font-icon" aria-hidden="true">&#10022;</span>
+      </button>
+      <button id="appSettingsToggle" class="footer-settings-toggle" type="button" title="设置" aria-label="设置" hidden>
+        <span class="font-icon" aria-hidden="true">&#9881;</span>
+      </button>
+      <form id="appSettingsPanel" class="footer-settings-panel" hidden>
+        <label>
+          <span>水印内容</span>
+          <input id="watermarkSetting" type="text" placeholder="留空则不显示水印">
+        </label>
+        <label>
+          <span>测量器型号</span>
+          <input id="measurementSetting" type="text" placeholder="留空则不显示右上角文字">
+        </label>
+        <label>
+          <span>彩蛋触发几率 (%)</span>
+          <input id="easterTriggerSetting" type="number" min="0" max="100" step="1">
+        </label>
+        <label>
+          <span>彩蛋爆发几率 (%)</span>
+          <input id="easterBurstSetting" type="number" min="0" max="100" step="1">
+        </label>
+        <label class="settings-check">
+          <span>矿车小猫动画</span>
+          <input id="mineCartAnimationSetting" type="checkbox">
+        </label>
+        <div class="settings-actions">
+          <button type="button" id="appSettingsCancel">取消</button>
+          <button type="submit" class="primary">保存</button>
+        </div>
+      </form>
+    </footer>
+  </div>
+</body>
+</html>

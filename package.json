@@ -1,0 +1,13 @@
+{
+  "name": "freqdig",
+  "version": "0.0.1",
+  "description": "FreqDig frequency response analysis tool.",
+  "private": true,
+  "author": "Diggercat",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/static-server.mjs 8000",
+    "serve": "node scripts/static-server.mjs"
+  }
+}
