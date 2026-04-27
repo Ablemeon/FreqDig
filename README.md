@@ -4,23 +4,52 @@
 
 FreqDig is a local frequency-response analysis tool for importing, comparing, visualizing, and exporting audio measurement curves.
 
+Current version: `0.0.1`
+
 <a id="中文"></a>
 <details open>
 <summary><strong>中文说明</strong></summary>
 
 ## 简介
 
-FreqDig 是一个轻量级频响曲线分析工具，支持导入 CSV/TXT/FRD/DAT 文本测量数据，查看原始曲线、相对基准差异、相对目标偏差，并导出图表。
-尤其对音频测量数据进行可视化分析，帮助用户快速理解频响曲线的特征和变化趋势。
-同时支持快捷导出png与svg等再编辑友好格式，对自媒体用户友好。
-完全原生算法，严格遵循傅里叶与希尔伯特函数计算，原始采样精度计算：对函数的旋转，缩放，移动，相位转换，裕量等进行严格全精度计算后抽头绘制图表。
+FreqDig 是一个本地运行的轻量级频响曲线分析工具，用于导入、查看、比较和导出音频测量曲线。它适合耳机、扬声器、测量麦克风、目标曲线和多组频响数据的快速对比分析。
 
-本项目采用MIT协议授权，请尊重并保留项目的版权声明。
+项目使用原生 HTML/CSS/JavaScript 实现，不依赖前端框架。页面通过本地 Node.js 静态服务器运行，避免直接打开 HTML 时遇到浏览器模块加载限制。
+
+## 功能
+
+- 导入 CSV/TXT/FRD/DAT 文本测量数据
+- 支持原始曲线、相对基准差异、相对目标偏差视图
+- 支持目标曲线导入与可见性控制
+- 支持曲线平滑、偏移、归一化和对齐
+- 支持相位、最小相位和相位裕量显示
+- 支持频带指示器和五段式偏差摘要
+- 支持水印、测量器型号和隐藏设置持久化
+- 支持 PNG、透明 PNG 和 SVG 导出
+- 支持导出图表时附加偏差概要
+
+## 数据格式
+
+支持文本数据行：
+
+```text
+frequency level
+frequency level phase
+```
+
+也支持常见表头，例如：
+
+```text
+frequency, level_db, phase
+```
+
+暂不直接解析 REW `.mdat` 二进制文件。请先在 REW 中导出为文本格式后再导入。
+
 ## 运行环境
 
-需要先安装 Node.js，建议使用当前 LTS 版本。
+需要安装 Node.js，建议使用当前 LTS 版本。
 
-检查是否已安装：
+检查 Node.js：
 
 ```bash
 node -v
@@ -36,8 +65,6 @@ winget install -e --id OpenJS.NodeJS.LTS
 
 ## 启动服务
 
-项目使用零依赖 Node.js 静态服务器运行页面，避免直接打开 HTML 时遇到浏览器模块、脚本或资源加载限制。
-
 ### Windows：双击启动
 
 在项目根目录双击：
@@ -46,15 +73,13 @@ winget install -e --id OpenJS.NodeJS.LTS
 start.cmd
 ```
 
-默认访问地址：
+默认访问：
 
 ```text
 http://127.0.0.1:8000/index.html
 ```
 
-### Windows：PowerShell 启动
-
-在项目根目录运行：
+### Windows：PowerShell
 
 ```powershell
 .\start.ps1
@@ -66,7 +91,7 @@ http://127.0.0.1:8000/index.html
 .\start.ps1 -Port 8123
 ```
 
-### macOS / Linux：Shell 启动
+### macOS / Linux：Shell
 
 首次使用时给脚本执行权限：
 
@@ -74,7 +99,7 @@ http://127.0.0.1:8000/index.html
 chmod +x ./start.sh
 ```
 
-启动默认端口 `8000`：
+启动：
 
 ```bash
 ./start.sh
@@ -86,13 +111,13 @@ chmod +x ./start.sh
 ./start.sh 8123
 ```
 
-### 通用：npm 启动
+### 通用：npm
 
 ```bash
 npm start
 ```
 
-也可以直接运行 Node 脚本：
+也可以直接运行：
 
 ```bash
 node scripts/static-server.mjs 8000 --open
@@ -130,6 +155,10 @@ macOS / Linux：
 http://127.0.0.1:8123/index.html
 ```
 
+## 许可
+
+本项目使用 MIT 协议发布。使用、修改和分发时请保留版权声明。
+
 </details>
 
 <a id="english"></a>
@@ -138,16 +167,44 @@ http://127.0.0.1:8123/index.html
 
 ## Overview
 
-FreqDig is a local frequency-response analysis tool. It can import CSV/TXT/FRD/DAT text measurement data, display raw curves, compare curves against a reference or target curve, and export charts.
+FreqDig is a lightweight local frequency-response analysis tool for importing, viewing, comparing, and exporting audio measurement curves. It is useful for quick comparison work involving headphones, speakers, measurement microphones, target curves, and multiple frequency-response datasets.
 
-- Author: Diggercat
-- License: MIT
+The project is built with native HTML/CSS/JavaScript and does not depend on a frontend framework. It runs through a local Node.js static server to avoid browser restrictions that can occur when opening HTML files directly.
+
+## Features
+
+- Import CSV/TXT/FRD/DAT text measurement data
+- View raw curves, reference-relative differences, and target-relative deviations
+- Import target curves and toggle target visibility
+- Apply smoothing, offset, normalization, and curve alignment
+- Display phase, minimum phase, and phase margin traces
+- Show frequency-band indicators and five-band deviation summaries
+- Configure watermark text, measurement model text, and hidden settings with persistence
+- Export PNG, transparent PNG, and SVG charts
+- Optionally append a deviation summary to exported charts
+
+## Data Format
+
+Supported text rows:
+
+```text
+frequency level
+frequency level phase
+```
+
+Common headers are also supported, for example:
+
+```text
+frequency, level_db, phase
+```
+
+REW `.mdat` binary files are not parsed directly. Export measurements from REW as text files before importing them into FreqDig.
 
 ## Requirements
 
 Install Node.js first. The current LTS version is recommended.
 
-Check whether Node.js is available:
+Check Node.js:
 
 ```bash
 node -v
@@ -162,8 +219,6 @@ winget install -e --id OpenJS.NodeJS.LTS
 ```
 
 ## Start The Server
-
-FreqDig uses a zero-dependency Node.js static server, which avoids browser restrictions that can happen when opening HTML files directly.
 
 ### Windows: Double Click
 
@@ -180,8 +235,6 @@ http://127.0.0.1:8000/index.html
 ```
 
 ### Windows: PowerShell
-
-Run this command in the project root:
 
 ```powershell
 .\start.ps1
@@ -201,7 +254,7 @@ Grant execute permission the first time:
 chmod +x ./start.sh
 ```
 
-Start on the default port `8000`:
+Start:
 
 ```bash
 ./start.sh
@@ -256,5 +309,9 @@ Then open the matching URL:
 ```text
 http://127.0.0.1:8123/index.html
 ```
+
+## License
+
+This project is released under the MIT License. Keep the copyright notice when using, modifying, or distributing it.
 
 </details>
