@@ -81,9 +81,13 @@ export class MineCartAnimator {
   }
 
   resize(width = this.width, height = this.height) {
-    this.width = positiveNumber(width, this.width);
-    this.height = positiveNumber(height, this.height);
+    const nextWidth = positiveNumber(width, this.width);
+    const nextHeight = positiveNumber(height, this.height);
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (this.width === nextWidth && this.height === nextHeight && this.dpr === dpr) return;
+
+    this.width = nextWidth;
+    this.height = nextHeight;
     this.dpr = dpr;
     this.canvas.width = Math.max(1, Math.round(this.width * dpr));
     this.canvas.height = Math.max(1, Math.round(this.height * dpr));
@@ -138,7 +142,11 @@ export class MineCartAnimator {
 
   play(type, options = {}) {
     window.clearTimeout(this.timer);
-    if (options.width || options.height) this.resize(options.width || this.width, options.height || this.height);
+    const nextWidth = options.width || this.width;
+    const nextHeight = options.height || this.height;
+    if (nextWidth !== this.width || nextHeight !== this.height) {
+      this.resize(nextWidth, nextHeight);
+    }
 
     const animationType = normalizeAnimationType(type);
     const config = ANIMATIONS[animationType] || ANIMATIONS.railRide;

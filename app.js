@@ -23,9 +23,12 @@ import {
   svgPath,
   svgText
 } from "./src/chartExport.js";
+import { installLiquidGlassFilter } from "./src/liquidGlassFilter.js";
 import { MetricAnimationController } from "./src/metricAnimation.js";
-import { DEFAULT_USER_SETTINGS, clampProbability, loadUserSettings, saveUserSettings } from "./src/userSettings.js";
+import { DEFAULT_USER_SETTINGS, clampProbability, loadUserSettings, normalizeTheme, saveUserSettings } from "./src/userSettings.js";
 import { getDemoCurves, getDemoTarget } from "./examples/demoData.js";
+
+installLiquidGlassFilter();
 
 // --- Theme and app state ---
 // Default palette used when new curves are imported.
@@ -46,6 +49,24 @@ const colors = [
   "#cc6677",
   "#882255",
   "#aa4499"
+];
+const darkModeColors = [
+  "#62cfff",
+  "#ff9f6e",
+  "#65e6b4",
+  "#ff9bd6",
+  "#fff46a",
+  "#8fe7ff",
+  "#ffc35a",
+  "#a9a4ff",
+  "#b8f0ff",
+  "#7ee6d8",
+  "#7edb96",
+  "#d7da72",
+  "#ffe28a",
+  "#ff9aaa",
+  "#e883c8",
+  "#f19cff"
 ];
 
 // Single source of truth for user-visible settings and loaded measurement data.
@@ -72,7 +93,8 @@ const state = {
   measurementModel: DEFAULT_USER_SETTINGS.measurementModel, // Small chart tag edited through the hidden footer settings.
   easterEggTriggerProbability: DEFAULT_USER_SETTINGS.easterEggTriggerProbability,
   easterEggBurstProbability: DEFAULT_USER_SETTINGS.easterEggBurstProbability,
-  mineCartAnimationEnabled: DEFAULT_USER_SETTINGS.mineCartAnimationEnabled
+  mineCartAnimationEnabled: DEFAULT_USER_SETTINGS.mineCartAnimationEnabled,
+  theme: DEFAULT_USER_SETTINGS.theme
 };
 
 // --- DOM references ---
@@ -103,11 +125,13 @@ const easterEggToggle = document.getElementById("easterEggToggle");
 const appSettingsToggle = document.getElementById("appSettingsToggle");
 const appSettingsPanel = document.getElementById("appSettingsPanel");
 const appSettingsCancel = document.getElementById("appSettingsCancel");
+const themeToggle = document.getElementById("themeToggle");
 const watermarkSetting = document.getElementById("watermarkSetting");
 const measurementSetting = document.getElementById("measurementSetting");
 const easterTriggerSetting = document.getElementById("easterTriggerSetting");
 const easterBurstSetting = document.getElementById("easterBurstSetting");
 const mineCartAnimationSetting = document.getElementById("mineCartAnimationSetting");
+const themeSetting = document.getElementById("themeSetting");
 const exportDeviationSummary = document.getElementById("exportDeviationSummary");
 const toolbar = document.querySelector(".toolbar");
 const xMinSlider = document.getElementById("xMinSlider");
@@ -134,6 +158,8 @@ let chartView = null; // Last computed chart geometry, scales, and visible serie
 let hoverPoint = null; // Current nearest point under the cursor, used by tooltip and dimming.
 let zoomControlsVisible = false; // Whether the on-canvas zoom controls are expanded.
 let lightweightDrawFrame = null; // requestAnimationFrame id for cheap redraws.
+let hoverMoveFrame = null; // requestAnimationFrame id for coalesced pointer hover work.
+let pendingHoverClientPoint = null; // Latest pointer position waiting to be processed.
 let transparentExportMode = false; // Skips chart background fill while exporting transparent PNG.
 let hoveredFrequencyBand = null; // Frequency band temporarily highlighted by pointer/focus.
 const lockedFrequencyBands = new Set(); // Frequency bands explicitly locked on by the user.
@@ -143,8 +169,10 @@ let tooltipPosition = null;
 let bandAnimationFrame = null;
 let bandAnimationStartedAt = 0;
 const bandAnimationValues = new Map();
+const cssColorCache = new Map();
 let easterEggEnabled = true;
 let metricAnimationController = null;
+let themeTransitionTimer = null;
 
 // --- Chart constants ---
 const MIN_FREQ = 20;
@@ -356,18 +384,74 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function cssColor(name, fallback) {
+  if (cssColorCache.has(name)) return cssColorCache.get(name);
+  const value = getComputedStyle(document.body).getPropertyValue(name).trim();
+  const color = value || fallback;
+  cssColorCache.set(name, color);
+  return color;
+}
+
+function isDarkTheme() {
+  return document.body.dataset.theme === "dark";
+}
+
 function nextCurveColor() {
   const usedColors = new Set([
     ...state.curves.map((curve) => curve.color.toLowerCase()),
     state.target?.color.toLowerCase()
   ].filter(Boolean));
-  const availableColors = colors.filter((color) => !usedColors.has(color.toLowerCase()));
-  const palette = availableColors.length ? availableColors : colors;
+  const sourcePalette = state.theme === "dark" ? darkModeColors : colors;
+  const availableColors = sourcePalette.filter((color) => !usedColors.has(color.toLowerCase()));
+  const palette = availableColors.length ? availableColors : sourcePalette;
   return palette[Math.floor(Math.random() * palette.length)];
 }
 
 function normalizeColor(value) {
   return /^#[0-9a-f]{6}$/i.test(value || "") ? value : null;
+}
+
+function displayCurveColor(color) {
+  if (state.theme !== "dark") return color;
+  return brightenColorForDarkChart(color);
+}
+
+function brightenColorForDarkChart(color) {
+  const hex = normalizeColor(color);
+  if (!hex) return color;
+  const rgb = hexToRgb(hex);
+  const luminance = relativeLuminance(rgb);
+  if (luminance >= 0.48) return hex;
+  const amount = Math.min(0.58, 0.22 + (0.48 - luminance) * 0.85);
+  return rgbToHex({
+    r: Math.round(rgb.r + (255 - rgb.r) * amount),
+    g: Math.round(rgb.g + (255 - rgb.g) * amount),
+    b: Math.round(rgb.b + (255 - rgb.b) * amount)
+  });
+}
+
+function hexToRgb(hex) {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16)
+  };
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${toHexByte(r)}${toHexByte(g)}${toHexByte(b)}`;
+}
+
+function toHexByte(value) {
+  return Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0");
+}
+
+function relativeLuminance({ r, g, b }) {
+  const [sr, sg, sb] = [r, g, b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
 }
 
 function displayLevel(point, curve, options = {}) {
@@ -843,32 +927,37 @@ function niceLinearFrequencyStep(rawStep) {
 
 function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb, minFreq, maxFreq, minPhase, maxPhase, hasPhaseSeries }) {
   if (!transparentExportMode) {
-    const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
-    gradient.addColorStop(0, "#ffffff");
-    gradient.addColorStop(0.58, "#fbfdfe");
-    gradient.addColorStop(1, "#f3f8fa");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    if (isDarkTheme()) {
+      ctx.fillStyle = "rgba(3, 12, 30, 0.025)";
+      ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    } else {
+      const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+      gradient.addColorStop(0, cssColor("--chart-bg-top", "#ffffff"));
+      gradient.addColorStop(0.58, cssColor("--chart-bg-mid", "#fbfdfe"));
+      gradient.addColorStop(1, cssColor("--chart-bg-bottom", "#f3f8fa"));
+      ctx.fillStyle = gradient;
+      ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    }
 
     const innerGlow = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
-    innerGlow.addColorStop(0, "rgba(255, 255, 255, 0.75)");
+    innerGlow.addColorStop(0, cssColor("--chart-plot-sheen", "rgba(255, 255, 255, 0.75)"));
     innerGlow.addColorStop(0.16, "rgba(255, 255, 255, 0)");
     innerGlow.addColorStop(0.86, "rgba(255, 255, 255, 0)");
-    innerGlow.addColorStop(1, "rgba(20, 33, 43, 0.035)");
+    innerGlow.addColorStop(1, cssColor("--chart-inner-shadow", "rgba(20, 33, 43, 0.035)"));
     ctx.fillStyle = innerGlow;
     ctx.fillRect(pad.left, pad.top, plotW, plotH);
   }
   drawFrequencyBandBackgrounds(x, pad, plotW, plotH, minFreq, maxFreq);
 
-  ctx.strokeStyle = "#d3dee4";
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#d3dee4");
   ctx.lineWidth = 1;
-  ctx.fillStyle = "#657484";
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
   ctx.font = "12px Arial";
 
   const majorFreqTicks = getMajorFrequencyTicks(minFreq, maxFreq);
   const minorFreqTicks = getMinorFrequencyTicks(minFreq, maxFreq, majorFreqTicks);
 
-  ctx.strokeStyle = "#e3ebef";
+  ctx.strokeStyle = cssColor("--chart-grid-minor", "#e3ebef");
   for (const freq of minorFreqTicks) {
     const px = x(freq);
     ctx.beginPath();
@@ -877,7 +966,7 @@ function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb
     ctx.stroke();
   }
 
-  ctx.strokeStyle = "#c8d5dd";
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#c8d5dd");
   for (const freq of majorFreqTicks) {
     const px = x(freq);
     ctx.beginPath();
@@ -889,7 +978,7 @@ function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb
     ctx.fillText(label, px - 10, state.showBandIndicator ? pad.top + plotH + BAND_INDICATOR_HEIGHT + 16 : height - 20);
   }
 
-  ctx.fillStyle = "#657484";
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
   ctx.fillText("频率 (Hz，对数坐标)", pad.left + plotW / 2 - 58, height - 6);
 
   const dbStep = niceDbStep((maxDb - minDb) / 8);
@@ -904,8 +993,8 @@ function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb
 
   if (hasPhaseSeries) {
     const phaseStep = nicePhaseStep((maxPhase - minPhase) / 8);
-    ctx.strokeStyle = "#ead9c2";
-    ctx.fillStyle = "#8a5a19";
+    ctx.strokeStyle = cssColor("--phase-grid", "#ead9c2");
+    ctx.fillStyle = cssColor("--phase-label", "#8a5a19");
     ctx.textAlign = "left";
     for (let phase = Math.ceil(minPhase / phaseStep) * phaseStep; phase <= maxPhase; phase += phaseStep) {
       const py = phaseY(phase);
@@ -924,17 +1013,17 @@ function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb
     ctx.textAlign = "start";
   }
 
-  ctx.strokeStyle = "#849aa8";
+  ctx.strokeStyle = cssColor("--chart-axis", "#849aa8");
   ctx.strokeRect(pad.left, pad.top, plotW, plotH);
 
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.strokeStyle = cssColor("--chart-top-stroke", "rgba(255, 255, 255, 0.85)");
   ctx.beginPath();
   ctx.moveTo(pad.left + 1, pad.top + 1);
   ctx.lineTo(pad.left + plotW - 1, pad.top + 1);
   ctx.stroke();
 
   if (state.mode !== "raw") {
-    ctx.strokeStyle = "#111827";
+    ctx.strokeStyle = cssColor("--chart-zero", "#111827");
     ctx.setLineDash([5, 5]);
     ctx.beginPath();
     ctx.moveTo(pad.left, y(0));
@@ -1013,16 +1102,17 @@ function drawSeries(series, x, y, minFreq, maxFreq) {
   const dimStrength = getDimStrength();
   for (const curve of series) {
     const hoverStrength = getHoverStrength(curve, "level");
+    const curveColor = displayCurveColor(curve.color);
 
     ctx.save();
     ctx.beginPath();
     ctx.rect(chartView.pad.left, chartView.pad.top, chartView.plotW, chartView.plotH);
     ctx.clip();
     ctx.globalAlpha = lerp(1, hoverStrength > 0 ? 1 : 0.12, dimStrength);
-    ctx.strokeStyle = curve.color;
+    ctx.strokeStyle = curveColor;
     ctx.lineWidth = lerp(2, 5, hoverStrength);
     if (hoverStrength > 0) {
-      ctx.shadowColor = curve.color;
+      ctx.shadowColor = curveColor;
       ctx.shadowBlur = lerp(0, 9, hoverStrength);
     }
     ctx.lineJoin = "round";
@@ -1052,6 +1142,7 @@ function drawPhaseSeries(series, x, phaseY, minFreq, maxFreq) {
   const dimStrength = getDimStrength();
   for (const curve of series) {
     if (!curve.phaseSeries?.length) continue;
+    const curveColor = displayCurveColor(curve.color);
 
     for (const phaseLine of curve.phaseSeries) {
       const hoverStrength = getHoverStrength(curve, phaseLine.id);
@@ -1060,10 +1151,10 @@ function drawPhaseSeries(series, x, phaseY, minFreq, maxFreq) {
       ctx.rect(chartView.pad.left, chartView.pad.top, chartView.plotW, chartView.plotH);
       ctx.clip();
       ctx.globalAlpha = lerp(0.78, hoverStrength > 0 ? 1 : 0.1, dimStrength);
-      ctx.strokeStyle = curve.color;
+      ctx.strokeStyle = curveColor;
       ctx.lineWidth = lerp(1.8, 4.6, hoverStrength);
       if (hoverStrength > 0) {
-        ctx.shadowColor = curve.color;
+        ctx.shadowColor = curveColor;
         ctx.shadowBlur = lerp(0, 8, hoverStrength);
       }
       ctx.setLineDash(phaseLine.dash);
@@ -1284,7 +1375,8 @@ function drawHoverGuide(point) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  ctx.fillStyle = point.curve.color;
+  const pointColor = displayCurveColor(point.curve.color);
+  ctx.fillStyle = pointColor;
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -1311,14 +1403,14 @@ function hideTooltip() {
 function updateTooltip(point, mouseX, mouseY) {
   const rows = (point.readings || []).map((reading) => `
     <div class="tooltip-series${reading.curve.id === point.curve.id ? " is-active" : ""}">
-      <span class="tooltip-swatch" style="background:${reading.curve.color}"></span>
+      <span class="tooltip-swatch" style="background:${displayCurveColor(reading.curve.color)}"></span>
       <span class="tooltip-series-name">${escapeHtml(reading.curve.name)}</span>
       <strong>${reading.level === null ? "-" : `${reading.level.toFixed(2)} dB`}${reading.phase === null ? "" : ` / ${reading.phase.toFixed(1)}°`}</strong>
     </div>
   `).join("");
 
   chartTooltip.innerHTML = `
-    <div class="tooltip-name" style="color:${point.curve.color}">${escapeHtml(point.curve.name)}</div>
+    <div class="tooltip-name" style="color:${displayCurveColor(point.curve.color)}">${escapeHtml(point.curve.name)}</div>
     <div class="tooltip-row"><span>频点</span><strong>${formatFrequency(point.frequency)}</strong></div>
     <div class="tooltip-row"><span>${point.kind === "phase" ? point.phaseLabel : "声压"}</span><strong>${point.kind === "phase" ? `${point.phase.toFixed(1)}°` : `${point.level.toFixed(2)} dB`}</strong></div>
     <div class="tooltip-readings">${rows}</div>
@@ -1347,6 +1439,40 @@ function updateTooltip(point, mouseX, mouseY) {
   }
   chartTooltip.style.left = `${tooltipPosition.x}px`;
   chartTooltip.style.top = `${tooltipPosition.y}px`;
+}
+
+function scheduleChartHover(event) {
+  pendingHoverClientPoint = { x: event.clientX, y: event.clientY };
+  if (hoverMoveFrame) return;
+  hoverMoveFrame = requestAnimationFrame(handleScheduledChartHover);
+}
+
+function handleScheduledChartHover() {
+  hoverMoveFrame = null;
+  if (!pendingHoverClientPoint || dragState) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = pendingHoverClientPoint.x - rect.left;
+  const mouseY = pendingHoverClientPoint.y - rect.top;
+  pendingHoverClientPoint = null;
+  const previousKey = hoverKey(hoverPoint);
+  const previousFrequency = hoverPoint?.frequency;
+  const nearest = findNearestPoint(mouseX, mouseY);
+
+  if (!nearest) {
+    if (hoverPoint) {
+      hideTooltip();
+      drawCurrentChartView();
+    }
+    return;
+  }
+
+  setHoverPoint(nearest);
+  updateTooltip(nearest, mouseX, mouseY);
+
+  if (previousKey === hoverKey(nearest) && previousFrequency === nearest.frequency) return;
+  if (previousKey !== hoverKey(nearest)) return;
+  drawCurrentChartView();
 }
 
 function findNearestPoint(mouseX, mouseY) {
@@ -1468,18 +1594,19 @@ function drawLegend(series, x, y) {
 
   for (const item of items) {
     const hoverStrength = getHoverStrength(item.curve, item.seriesKey);
+    const itemColor = displayCurveColor(item.curve.color);
     ctx.save();
     ctx.globalAlpha = lerp(1, hoverStrength > 0 ? 1 : 0.25, dimStrength);
     if (hoverStrength > 0) {
-      ctx.fillStyle = "rgba(255, 255, 255, 0.86)";
-      ctx.strokeStyle = item.curve.color;
+      ctx.fillStyle = cssColor("--chart-highlight-bg", "rgba(255, 255, 255, 0.86)");
+      ctx.strokeStyle = itemColor;
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = hoverStrength;
       ctx.fillRect(x - 8, y + offset - 15, 230, 17);
       ctx.strokeRect(x - 8, y + offset - 15, 230, 17);
       ctx.globalAlpha = lerp(1, hoverStrength > 0 ? 1 : 0.25, dimStrength);
     }
-    ctx.strokeStyle = item.curve.color;
+    ctx.strokeStyle = itemColor;
     ctx.lineWidth = lerp(2, 4, hoverStrength);
     ctx.setLineDash(item.dash);
     ctx.beginPath();
@@ -1487,7 +1614,7 @@ function drawLegend(series, x, y) {
     ctx.lineTo(x + 20, y + offset - 7);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = "#1f2933";
+    ctx.fillStyle = cssColor("--ink", "#1f2933");
     ctx.font = hoverStrength > 0.5 ? "700 12px Arial" : "12px Arial";
     ctx.fillText(item.label, x + 28, y + offset - 4);
     ctx.restore();
@@ -1549,11 +1676,11 @@ function drawMeasurementLabel() {
   ctx.font = "600 11px Inter, 'Segoe UI', Arial, sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "top";
-  ctx.shadowColor = "rgba(255, 255, 255, 0.9)";
+  ctx.shadowColor = state.theme === "dark" ? "rgba(0, 0, 0, 0.55)" : "rgba(255, 255, 255, 0.9)";
   ctx.shadowBlur = 4;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 1;
-  ctx.fillStyle = "rgba(20, 33, 43, 0.42)";
+  ctx.fillStyle = state.theme === "dark" ? "rgba(220, 235, 243, 0.5)" : "rgba(20, 33, 43, 0.42)";
   ctx.fillText(text, x, y);
   ctx.restore();
 }
@@ -1571,11 +1698,11 @@ function drawWatermark(options = {}) {
   ctx.font = "700 32px Inter, 'Segoe UI', Arial, sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
-  ctx.shadowColor = "rgba(20, 33, 43, 0.28)";
+  ctx.shadowColor = state.theme === "dark" ? "rgba(0, 0, 0, 0.5)" : "rgba(20, 33, 43, 0.28)";
   ctx.shadowBlur = 8;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 3;
-  ctx.fillStyle = "rgba(20, 33, 43, 0.46)";
+  ctx.fillStyle = state.theme === "dark" ? "rgba(220, 235, 243, 0.34)" : "rgba(20, 33, 43, 0.46)";
   ctx.fillText(text, x, y);
   ctx.restore();
 }
@@ -1645,13 +1772,13 @@ function buildChartSvg() {
   parts.push(`<g clip-path="url(#${clipId})">`);
   for (const curve of series) {
     const path = svgPathForSeries(curve.data, x, y, minFreq, maxFreq, "level");
-    if (path) parts.push(svgPath(path, curve.color, 2));
+    if (path) parts.push(svgPath(path, displayCurveColor(curve.color), 2));
   }
 
   for (const curve of series) {
     for (const phaseLine of curve.phaseSeries || []) {
       const path = svgPathForSeries(phaseLine.data, x, phaseY, minFreq, maxFreq, "phase", true);
-      if (path) parts.push(svgPath(path, curve.color, 1.8, phaseLine.dash, 0.78));
+      if (path) parts.push(svgPath(path, displayCurveColor(curve.color), 1.8, phaseLine.dash, 0.78));
     }
   }
   parts.push(`</g>`);
@@ -1739,7 +1866,7 @@ function buildLegendSvg(series, x, y) {
 
   for (const item of getLegendItems(series).slice(0, 14)) {
     const lineY = y + offset - 7;
-    parts.push(svgLine(x, lineY, x + 20, lineY, item.curve.color, 2, item.dash));
+    parts.push(svgLine(x, lineY, x + 20, lineY, displayCurveColor(item.curve.color), 2, item.dash));
     parts.push(svgText(item.label, x + 28, y + offset - 4, { fill: "#1f2933", size: 12 }));
     offset += 18;
   }
@@ -1997,7 +2124,8 @@ function saveProjectFile() {
       watermarkText: state.watermarkText,
       measurementModel: state.measurementModel,
       easterEggTriggerProbability: state.easterEggTriggerProbability,
-      easterEggBurstProbability: state.easterEggBurstProbability
+      easterEggBurstProbability: state.easterEggBurstProbability,
+      theme: state.theme
     },
     curves: state.curves.map(serializeCurve),
     target: state.target ? serializeCurve(state.target) : null
@@ -2037,10 +2165,11 @@ async function loadProjectFile(file) {
   state.showBandIndicator = Boolean(loadedState.showBandIndicator);
   state.globalSmoothing = Boolean(loadedState.globalSmoothing);
   state.exportDeviationSummary = Boolean(loadedState.exportDeviationSummary);
-  state.watermarkText = typeof loadedState.watermarkText === "string" ? loadedState.watermarkText : DEFAULT_WATERMARK_TEXT;
-  state.measurementModel = typeof loadedState.measurementModel === "string" ? loadedState.measurementModel : DEFAULT_MEASUREMENT_MODEL;
+  state.watermarkText = typeof loadedState.watermarkText === "string" ? loadedState.watermarkText : DEFAULT_USER_SETTINGS.watermarkText;
+  state.measurementModel = typeof loadedState.measurementModel === "string" ? loadedState.measurementModel : DEFAULT_USER_SETTINGS.measurementModel;
   state.easterEggTriggerProbability = clampProbability(loadedState.easterEggTriggerProbability, state.easterEggTriggerProbability);
   state.easterEggBurstProbability = clampProbability(loadedState.easterEggBurstProbability, state.easterEggBurstProbability);
+  setTheme(loadedState.theme || state.theme, { persist: false, redraw: false });
   if (state.globalSmoothing) {
     for (const curve of state.curves) curve.smoothingOctaves = GLOBAL_SMOOTHING_OCTAVES;
     if (state.target) state.target.smoothingOctaves = GLOBAL_SMOOTHING_OCTAVES;
@@ -2066,7 +2195,7 @@ function renderCurveList() {
     const item = document.createElement("div");
     item.className = "curve-item";
     item.innerHTML = `
-      <span class="swatch" style="background:${curve.color}"></span>
+      <span class="swatch" style="background:${displayCurveColor(curve.color)}"></span>
       <input class="curve-name-input" value="${escapeHtml(curve.name)}" title="${escapeHtml(curve.name)}" aria-label="曲线名称">
       <button class="icon-button visibility-button${curve.visible ? "" : " is-off"}" title="${curve.visible ? "隐藏曲线" : "显示曲线"}" aria-label="${curve.visible ? "隐藏曲线" : "显示曲线"}">${eyeIcon(curve.visible)}</button>
       <button class="icon-button danger-button" title="删除曲线" aria-label="删除曲线">${trashIcon()}</button>
@@ -2136,7 +2265,7 @@ function renderCurveList() {
 
     colorInput.addEventListener("input", (event) => {
       curve.color = event.target.value;
-      item.querySelector(".swatch").style.background = curve.color;
+      item.querySelector(".swatch").style.background = displayCurveColor(curve.color);
       updateChartSeriesColor(curve.id, curve.color);
       scheduleLightweightDraw();
     });
@@ -2185,7 +2314,7 @@ function renderCurveList() {
     const target = document.createElement("div");
     target.className = "curve-item";
     target.innerHTML = `
-      <span class="swatch" style="background:${state.target.color}"></span>
+      <span class="swatch" style="background:${displayCurveColor(state.target.color)}"></span>
       <input class="curve-name-input" value="${escapeHtml(state.target.name)}" title="${escapeHtml(state.target.name)}" aria-label="目标曲线名称">
       <button class="icon-button danger-button" title="移除目标曲线" aria-label="移除目标曲线">${trashIcon()}</button>
       <div class="curve-meta">${state.target.data.length} 个点</div>
@@ -2238,7 +2367,7 @@ function renderCurveList() {
 
     target.querySelector("input[type='color']").addEventListener("input", (event) => {
       state.target.color = event.target.value;
-      target.querySelector(".swatch").style.background = state.target.color;
+      target.querySelector(".swatch").style.background = displayCurveColor(state.target.color);
       updateChartSeriesColor(state.target.id, state.target.color);
       scheduleLightweightDraw();
     });
@@ -2678,6 +2807,69 @@ function revealAppSettingsButton() {
   appSettingsToggle.focus();
 }
 
+function setTheme(value, options = {}) {
+  const theme = normalizeTheme(value);
+  const persist = options.persist !== false;
+  const redraw = options.redraw !== false;
+  state.theme = theme;
+  document.body.dataset.theme = theme;
+  cssColorCache.clear();
+  themeToggle.classList.toggle("is-dark", theme === "dark");
+  themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+  themeToggle.title = theme === "dark" ? "切换亮色模式" : "切换暗色模式";
+  themeToggle.setAttribute("aria-label", themeToggle.title);
+  if (themeSetting) themeSetting.checked = theme === "dark";
+  if (persist) saveUserSettings(state);
+  if (redraw) {
+    renderCurveList();
+    drawChart();
+  }
+}
+
+function toggleTheme() {
+  const nextTheme = state.theme === "dark" ? "light" : "dark";
+  if (nextTheme === "dark") {
+    playDarkThemeTransition(() => setTheme("dark"));
+    return;
+  }
+  setTheme("light");
+}
+
+function playDarkThemeTransition(onRevealComplete) {
+  const rect = themeToggle.getBoundingClientRect();
+  const originX = `${rect.left + rect.width / 2}px`;
+  const originY = `${rect.top + rect.height / 2}px`;
+  document.body.style.setProperty("--theme-origin-x", originX);
+  document.body.style.setProperty("--theme-origin-y", originY);
+
+  const clone = document.documentElement.cloneNode(true);
+  clone.querySelectorAll("script").forEach((script) => script.remove());
+  clone.querySelectorAll(".theme-wipe-overlay").forEach((node) => node.remove());
+  clone.querySelector("body")?.setAttribute("data-theme", "dark");
+  clone.querySelector("body")?.classList.add("theme-scene-enter");
+
+  const overlay = document.createElement("iframe");
+  overlay.className = "theme-wipe-overlay";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.tabIndex = -1;
+  document.body.appendChild(overlay);
+  overlay.contentDocument.open();
+  overlay.contentDocument.write(`<!DOCTYPE html>${clone.outerHTML}`);
+  overlay.contentDocument.close();
+
+  document.body.classList.remove("theme-scene-enter");
+
+  window.clearTimeout(themeTransitionTimer);
+  window.setTimeout(() => {
+    onRevealComplete?.();
+    document.body.classList.add("theme-scene-enter");
+  }, 760);
+  themeTransitionTimer = window.setTimeout(() => {
+    overlay.remove();
+    document.body.classList.remove("theme-scene-enter");
+  }, 1680);
+}
+
 function openAppSettings() {
   syncAppSettingsForm();
   appSettingsPanel.hidden = false;
@@ -2696,6 +2888,7 @@ function syncAppSettingsForm() {
   easterTriggerSetting.value = String(Math.round(state.easterEggTriggerProbability * 100));
   easterBurstSetting.value = String(Math.round(state.easterEggBurstProbability * 100));
   mineCartAnimationSetting.checked = state.mineCartAnimationEnabled;
+  themeSetting.checked = state.theme === "dark";
 }
 
 function applyAppSettingsFromForm() {
@@ -2703,6 +2896,8 @@ function applyAppSettingsFromForm() {
   state.measurementModel = measurementSetting.value.trim();
   state.easterEggTriggerProbability = clampProbability(Number(easterTriggerSetting.value) / 100, state.easterEggTriggerProbability);
   state.easterEggBurstProbability = clampProbability(Number(easterBurstSetting.value) / 100, state.easterEggBurstProbability);
+  state.theme = themeSetting.checked ? "dark" : "light";
+  setTheme(state.theme, { persist: false, redraw: false });
   setMineCartAnimationEnabled(mineCartAnimationSetting.checked);
   saveUserSettings(state);
   cleanupCatAvatarEasterEgg();
@@ -2798,25 +2993,17 @@ window.addEventListener("mouseup", () => {
 
 canvas.addEventListener("mousemove", (event) => {
   if (dragState) return;
-  const rect = canvas.getBoundingClientRect();
-  const mouseX = event.clientX - rect.left;
-  const mouseY = event.clientY - rect.top;
-  const nearest = findNearestPoint(mouseX, mouseY);
-
-  if (!nearest) {
-    hideTooltip();
-    drawChart();
-    return;
-  }
-
-  setHoverPoint(nearest);
-  updateTooltip(nearest, mouseX, mouseY);
-  drawChart();
+  scheduleChartHover(event);
 });
 
 canvas.addEventListener("mouseleave", () => {
+  if (hoverMoveFrame) {
+    cancelAnimationFrame(hoverMoveFrame);
+    hoverMoveFrame = null;
+  }
+  pendingHoverClientPoint = null;
   hideTooltip();
-  drawChart();
+  drawCurrentChartView();
 });
 
 window.addEventListener("resize", () => {
@@ -2845,6 +3032,10 @@ easterEggToggle.addEventListener("click", () => {
   syncEasterEggToggle();
 });
 
+themeToggle.addEventListener("click", () => {
+  toggleTheme();
+});
+
 appSettingsToggle.addEventListener("click", () => {
   if (appSettingsPanel.hidden) openAppSettings();
   else closeAppSettings();
@@ -2859,7 +3050,7 @@ appSettingsPanel.addEventListener("submit", (event) => {
 
 setupCatAvatarEasterEgg({
   isEnabled: () => easterEggEnabled,
-  ignoredSelector: "#easterEggToggle, #appSettingsToggle, #appSettingsPanel",
+  ignoredSelector: "#themeToggle, #easterEggToggle, #appSettingsToggle, #appSettingsPanel",
   getTriggerProbability: () => state.easterEggTriggerProbability,
   getBurstProbability: () => state.easterEggBurstProbability
 });
@@ -2880,6 +3071,12 @@ document.addEventListener("keydown", (event) => {
   revealAppSettingsButton();
 });
 
+document.addEventListener("visibilitychange", () => {
+  document.body.classList.toggle("is-page-hidden", document.hidden);
+  metricAnimationController?.setPaused(document.hidden);
+});
+
 Object.assign(state, loadUserSettings());
+setTheme(state.theme, { persist: false, redraw: false });
 render();
 setupMetricAnimation();

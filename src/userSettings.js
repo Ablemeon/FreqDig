@@ -12,7 +12,8 @@ export const DEFAULT_USER_SETTINGS = {
   measurementModel: "G.R.A.S. 0045 IEC60318-4",
   easterEggTriggerProbability: 0.5,
   easterEggBurstProbability: 0.2,
-  mineCartAnimationEnabled: true
+  mineCartAnimationEnabled: true,
+  theme: "light"
 };
 
 export function clampProbability(value, fallback) {
@@ -32,7 +33,8 @@ export function loadUserSettings() {
       measurementModel: typeof settings.measurementModel === "string" ? settings.measurementModel : DEFAULT_USER_SETTINGS.measurementModel,
       easterEggTriggerProbability: clampProbability(settings.easterEggTriggerProbability, DEFAULT_USER_SETTINGS.easterEggTriggerProbability),
       easterEggBurstProbability: clampProbability(settings.easterEggBurstProbability, DEFAULT_USER_SETTINGS.easterEggBurstProbability),
-      mineCartAnimationEnabled: typeof settings.mineCartAnimationEnabled === "boolean" ? settings.mineCartAnimationEnabled : DEFAULT_USER_SETTINGS.mineCartAnimationEnabled
+      mineCartAnimationEnabled: typeof settings.mineCartAnimationEnabled === "boolean" ? settings.mineCartAnimationEnabled : DEFAULT_USER_SETTINGS.mineCartAnimationEnabled,
+      theme: normalizeTheme(settings.theme)
     };
   } catch {
     deleteCookie(USER_SETTINGS_COOKIE);
@@ -47,8 +49,13 @@ export function saveUserSettings(settings) {
     measurementModel: settings.measurementModel,
     easterEggTriggerProbability: settings.easterEggTriggerProbability,
     easterEggBurstProbability: settings.easterEggBurstProbability,
-    mineCartAnimationEnabled: settings.mineCartAnimationEnabled
+    mineCartAnimationEnabled: settings.mineCartAnimationEnabled,
+    theme: normalizeTheme(settings.theme)
   }), COOKIE_MAX_AGE_DAYS);
+}
+
+export function normalizeTheme(value) {
+  return value === "dark" ? "dark" : "light";
 }
 
 function getCookie(name) {

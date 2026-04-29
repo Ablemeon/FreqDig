@@ -13,6 +13,7 @@ export class MetricAnimationController {
     this.stage = stage;
     this.grid = grid || stage?.closest(".metric-grid") || null;
     this.enabled = Boolean(enabled);
+    this.paused = false;
     this.animator = null;
     this.mirrored = false;
     this.timer = 0;
@@ -20,7 +21,7 @@ export class MetricAnimationController {
   }
 
   start(delay = 240) {
-    if (!this.stage || !this.enabled) return;
+    if (!this.stage || !this.enabled || this.paused) return;
     this.ensureAnimator();
     this.schedule(delay);
   }
@@ -31,14 +32,22 @@ export class MetricAnimationController {
     window.clearTimeout(this.timer);
     this.timer = 0;
 
-    if (!this.animator && this.enabled) {
+    if (!this.animator && this.enabled && !this.paused) {
       this.start(120);
       return;
     }
 
     if (!this.animator) return;
     this.animator.clear();
-    if (this.enabled) this.schedule(120);
+    if (this.enabled && !this.paused) this.schedule(120);
+  }
+
+  setPaused(paused) {
+    this.paused = Boolean(paused);
+    window.clearTimeout(this.timer);
+    this.timer = 0;
+    this.animator?.clear();
+    if (!this.paused && this.enabled) this.start(120);
   }
 
   resize() {
@@ -64,12 +73,12 @@ export class MetricAnimationController {
 
   schedule(delay = 900) {
     window.clearTimeout(this.timer);
-    if (!this.enabled) return;
+    if (!this.enabled || this.paused) return;
     this.timer = window.setTimeout(() => this.playNext(), delay);
   }
 
   playNext() {
-    if (!this.enabled || !this.animator || !this.stage) return;
+    if (!this.enabled || this.paused || !this.animator || !this.stage) return;
 
     const width = this.stage.clientWidth || 520;
     const height = this.stage.clientHeight || 86;
