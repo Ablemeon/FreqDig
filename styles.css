@@ -696,6 +696,10 @@ button,
   cursor: pointer;
 }
 
+.distortion-analysis-range[hidden] {
+  display: none;
+}
+
 .toolbar-check input {
   margin: 0;
 }
@@ -706,6 +710,70 @@ select:hover,
 .toolbar-check:hover {
   border-color: var(--line-strong);
   background: var(--control-hover-bg);
+}
+
+button.is-active {
+  border-color: rgba(22, 124, 143, 0.42);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(22, 124, 143, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+#distortionModeToggle {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  width: 126px;
+  min-width: 126px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(132, 154, 168, 0.12);
+  box-shadow: inset 0 1px 4px rgba(21, 38, 52, 0.08);
+  overflow: hidden;
+}
+
+#distortionModeToggle:hover {
+  background: rgba(132, 154, 168, 0.16);
+}
+
+#distortionModeToggle.is-active {
+  border-color: rgba(22, 124, 143, 0.42);
+  background: rgba(22, 124, 143, 0.1);
+  color: var(--accent);
+  box-shadow: inset 0 1px 4px rgba(21, 38, 52, 0.08), 0 0 0 1px rgba(22, 124, 143, 0.12);
+}
+
+.mode-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  height: calc(100% - 6px);
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 4px 12px rgba(22, 124, 143, 0.22);
+  transition: transform 180ms ease, background 180ms ease;
+}
+
+#distortionModeToggle.is-active .mode-switch-thumb {
+  transform: translateX(100%);
+}
+
+.mode-switch-label {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  height: 28px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  transition: color 160ms ease;
+}
+
+.mode-switch-label.is-active {
+  color: #fff;
 }
 
 button:focus-visible,
@@ -853,6 +921,7 @@ main {
   width: 100%;
   margin: 0 auto;
   overflow: hidden;
+  transition: grid-template-columns 360ms cubic-bezier(0.2, 0.82, 0.22, 1), max-width 360ms ease, padding 360ms ease;
 }
 
 .app-footer {
@@ -1147,6 +1216,7 @@ aside {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 360ms cubic-bezier(0.2, 0.82, 0.22, 1), grid-template-rows 360ms cubic-bezier(0.2, 0.82, 0.22, 1), gap 220ms ease;
 }
 
 .chart-panel {
@@ -1158,6 +1228,7 @@ aside {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 251, 252, 0.96)),
     var(--panel);
+  transition: transform 360ms cubic-bezier(0.2, 0.82, 0.22, 1), opacity 240ms ease, min-height 240ms ease;
 }
 
 .chart-head {
@@ -1199,6 +1270,57 @@ aside {
   height: 100%;
   overflow: hidden;
   background: #f7fbfc;
+}
+
+.canvas-wrap.is-distortion-mode .chart-smoothing-button {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px) scale(0.98);
+}
+
+body.is-distortion-mode aside .sidebar-control,
+body.is-distortion-mode aside > .check-control,
+body.is-distortion-mode aside .sidebar-actions {
+  display: none;
+}
+
+body.is-distortion-mode main {
+  max-width: none;
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.workspace.is-distortion-mode {
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.workspace.is-distortion-mode .metrics {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.workspace.is-distortion-mode .chart-panel {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  animation: distortion-chart-slide-in 360ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
+}
+
+.workspace.is-distortion-mode .canvas-wrap {
+  min-height: 0;
+}
+
+@keyframes distortion-chart-slide-in {
+  from {
+    opacity: 0.78;
+    transform: translateX(18px) scale(0.992);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
 }
 
 .canvas-wrap.is-drag-over::after {
@@ -1815,6 +1937,242 @@ canvas.is-dragging {
   box-shadow: 0 4px 12px rgba(21, 38, 52, 0.055);
 }
 
+.distortion-empty {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.distortion-band-control {
+  cursor: pointer;
+}
+
+.distortion-axis-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+}
+
+.distortion-axis-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.distortion-axis-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 112px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(132, 154, 168, 0.1);
+}
+
+.distortion-axis-toggle button {
+  height: 26px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.distortion-axis-toggle button.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 3px 9px rgba(22, 124, 143, 0.22);
+}
+
+.distortion-group-tabs,
+.distortion-series-box {
+  display: grid;
+  gap: 8px;
+}
+
+.distortion-group {
+  display: grid;
+  gap: 8px;
+}
+
+.distortion-group-tab {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.distortion-group-tab.is-enabled {
+  border-color: rgba(22, 124, 143, 0.38);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px rgba(22, 124, 143, 0.12);
+}
+
+.distortion-group-select {
+  position: relative;
+  width: 46px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 999px;
+  border-color: rgba(132, 154, 168, 0.28);
+  background: rgba(132, 154, 168, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(132, 154, 168, 0.08);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.distortion-group-select::before {
+  content: "";
+  position: absolute;
+  inset: 10px 7px auto 7px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(132, 154, 168, 0.78);
+  opacity: 0.9;
+  transition: background 160ms ease, opacity 160ms ease;
+}
+
+.distortion-group-select::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(31, 42, 52, 0.22);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.distortion-group-tab.is-enabled .distortion-group-select {
+  border-color: rgba(22, 124, 143, 0.38);
+  background-color: rgba(22, 124, 143, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(22, 124, 143, 0.1);
+}
+
+.distortion-group-tab.is-enabled .distortion-group-select::before {
+  background: rgba(22, 124, 143, 0.78);
+}
+
+.distortion-group-tab.is-enabled .distortion-group-select::after {
+  transform: translateX(22px);
+  box-shadow: 0 1px 5px rgba(22, 124, 143, 0.24);
+}
+
+.distortion-group-select--1::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 4px, rgba(132, 154, 168, 0.76) 4px 12px, transparent 12px 17px);
+}
+
+.distortion-group-select--2::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 5px, rgba(132, 154, 168, 0.8) 5px 8px, transparent 8px 13px);
+}
+
+.distortion-group-select--3::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 4px, rgba(132, 154, 168, 0.78) 4px 14px, transparent 14px 18px, rgba(132, 154, 168, 0.78) 18px 21px, transparent 21px 26px);
+}
+
+.distortion-group-select--4::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 3px, rgba(132, 154, 168, 0.78) 3px 17px, transparent 17px 22px, rgba(132, 154, 168, 0.78) 22px 27px, transparent 27px 32px);
+}
+
+.distortion-group-select--5::before {
+  background-image:
+    repeating-linear-gradient(90deg, transparent 0 4px, rgba(132, 154, 168, 0.82) 4px 6px, transparent 6px 10px);
+}
+
+.distortion-group-tab.is-enabled .distortion-group-select {
+  filter: saturate(1.25);
+}
+
+.distortion-group-tab.is-off {
+  opacity: 0.72;
+}
+
+.distortion-group-tab .danger-button {
+  width: 34px;
+  min-width: 0;
+  padding: 0;
+}
+
+.distortion-group-name {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 0 6px;
+  color: var(--ink);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distortion-group-name:hover,
+.distortion-group-name:focus {
+  border-color: var(--line);
+  background: #fff;
+  outline: none;
+}
+
+.distortion-series-box {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff, var(--panel-soft));
+}
+
+.distortion-group.is-disabled .distortion-series-box {
+  opacity: 0.62;
+}
+
+.distortion-series-tab {
+  justify-content: center;
+  min-width: 0;
+  height: 50px;
+  padding: 0 8px;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.distortion-series-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--series-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--series-color) 16%, transparent);
+  opacity: 1;
+}
+
+.distortion-series-tab.is-off {
+  color: var(--muted);
+}
+
+.distortion-series-tab.is-off .distortion-series-dot {
+  background: #9aa7b2;
+  box-shadow: none;
+  opacity: 0.46;
+}
+
 .swatch {
   width: 14px;
   height: 14px;
@@ -2045,6 +2403,7 @@ canvas.is-dragging {
 .metrics {
   padding: 14px;
   overflow: auto;
+  transition: transform 360ms cubic-bezier(0.2, 0.82, 0.22, 1), opacity 240ms ease, padding 240ms ease;
 }
 
 .metric-grid {
@@ -2061,6 +2420,67 @@ canvas.is-dragging {
   background: linear-gradient(180deg, #ffffff, var(--panel-soft));
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82);
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.workspace.is-distortion-mode .metric {
+  grid-column: 1 / -1;
+  animation: metric-content-enter 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.workspace.is-distortion-mode .metric-grid {
+  grid-template-columns: 1fr;
+}
+
+.workspace.is-distortion-mode .metrics {
+  animation: distortion-metrics-slide-in 360ms cubic-bezier(0.2, 0.82, 0.22, 1) both;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(2) {
+  animation-delay: 24ms;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(4) {
+  animation-delay: 48ms;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(5) {
+  animation-delay: 72ms;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(6) {
+  animation-delay: 96ms;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(7) {
+  animation-delay: 120ms;
+}
+
+.workspace.is-distortion-mode .metric:nth-child(8) {
+  animation-delay: 144ms;
+}
+
+@keyframes metric-content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes distortion-metrics-slide-in {
+  from {
+    opacity: 0.76;
+    transform: translateX(-14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .metric:nth-child(1),
@@ -2292,6 +2712,31 @@ body[data-theme="dark"] .file-button.primary {
   box-shadow: 0 0 0 1px rgba(215, 248, 255, 0.28), 0 0 24px rgba(78, 215, 255, 0.36);
 }
 
+body[data-theme="dark"] #distortionModeToggle,
+body[data-theme="dark"] #distortionModeToggle.is-active {
+  color: #effaff;
+  border-color: rgba(228, 248, 255, 0.42);
+  background: rgba(5, 20, 47, 0.22);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.18), 0 0 16px rgba(128, 219, 255, 0.08);
+}
+
+body[data-theme="dark"] #distortionModeToggle:hover {
+  background: rgba(9, 34, 76, 0.3);
+}
+
+body[data-theme="dark"] #distortionModeToggle .mode-switch-thumb {
+  background: linear-gradient(180deg, rgba(126, 211, 255, 0.9), rgba(45, 128, 196, 0.94));
+  box-shadow: 0 4px 14px rgba(4, 18, 42, 0.26), 0 0 18px rgba(126, 219, 255, 0.18);
+}
+
+body[data-theme="dark"] #distortionModeToggle .mode-switch-label {
+  color: rgba(241, 250, 255, 0.66);
+}
+
+body[data-theme="dark"] #distortionModeToggle .mode-switch-label.is-active {
+  color: #ffffff;
+}
+
 body[data-theme="dark"] input[type="number"],
 body[data-theme="dark"] input[type="color"],
 body[data-theme="dark"] .footer-settings-panel input {
@@ -2388,6 +2833,105 @@ body[data-theme="dark"] input[type="color"]::-webkit-color-swatch {
 body[data-theme="dark"] input[type="color"]::-moz-color-swatch {
   border: 1px solid rgba(255, 255, 255, 0.46);
   border-radius: 4px;
+}
+
+body[data-theme="dark"] .distortion-axis-controls,
+body[data-theme="dark"] .distortion-series-box {
+  color: #f3fbff;
+  border-color: rgba(228, 248, 255, 0.34);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(87, 175, 238, 0.035)),
+    rgba(6, 24, 58, 0.26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 18px rgba(126, 219, 255, 0.08);
+  backdrop-filter: blur(8px) saturate(1.08);
+}
+
+body[data-theme="dark"] .distortion-axis-label {
+  color: #d7edf8;
+  font-weight: 700;
+}
+
+body[data-theme="dark"] .distortion-axis-toggle {
+  border-color: rgba(228, 248, 255, 0.28);
+  background: rgba(4, 17, 42, 0.34);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.16);
+}
+
+body[data-theme="dark"] .distortion-axis-toggle button {
+  position: relative;
+  overflow: hidden;
+  color: rgba(241, 250, 255, 0.72);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body[data-theme="dark"] .distortion-axis-toggle button:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+body[data-theme="dark"] .distortion-axis-toggle button.is-active {
+  color: #ffffff;
+  background: linear-gradient(180deg, rgba(126, 211, 255, 0.34), rgba(45, 128, 196, 0.42));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 4px 12px rgba(4, 18, 42, 0.22);
+}
+
+body[data-theme="dark"] .distortion-group-tab {
+  border-color: rgba(159, 214, 255, 0.28);
+  background:
+    linear-gradient(145deg, rgba(97, 170, 232, 0.32), rgba(26, 73, 145, 0.38)),
+    rgba(8, 28, 67, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 16px rgba(64, 166, 232, 0.12);
+}
+
+body[data-theme="dark"] .distortion-group-tab.is-enabled {
+  border-color: rgba(139, 233, 255, 0.46);
+  background:
+    linear-gradient(145deg, rgba(48, 149, 211, 0.48), rgba(26, 87, 169, 0.44)),
+    rgba(8, 35, 79, 0.48);
+}
+
+body[data-theme="dark"] .distortion-group-name {
+  color: #ffffff;
+  text-shadow: 0 1px 8px rgba(1, 8, 24, 0.36);
+}
+
+body[data-theme="dark"] .distortion-group-name:hover,
+body[data-theme="dark"] .distortion-group-name:focus {
+  border-color: rgba(228, 248, 255, 0.34);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+body[data-theme="dark"] .distortion-series-tab {
+  color: rgba(241, 250, 255, 0.86);
+  border-color: rgba(228, 248, 255, 0.22);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.07), rgba(94, 177, 237, 0.035)),
+    rgba(9, 28, 65, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 12px rgba(126, 219, 255, 0.06);
+  backdrop-filter: blur(6px) saturate(1.05);
+}
+
+body[data-theme="dark"] .distortion-series-tab:hover {
+  color: #ffffff;
+  border-color: rgba(228, 248, 255, 0.38);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(94, 177, 237, 0.055)),
+    rgba(9, 28, 65, 0.3);
+}
+
+body[data-theme="dark"] .distortion-series-tab.is-off {
+  color: rgba(214, 232, 244, 0.56);
+  border-color: rgba(228, 248, 255, 0.14);
+  background: rgba(8, 24, 57, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+body[data-theme="dark"] .distortion-series-tab.is-visible {
+  border-color: rgba(228, 248, 255, 0.3);
 }
 
 body[data-theme="dark"] .check-control input[type="checkbox"],
@@ -2642,6 +3186,24 @@ body[data-theme="dark"] .chart-tooltip {
     grid-template-rows: auto auto;
     overflow: visible;
     order: 1;
+  }
+
+  .workspace.is-distortion-mode {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .workspace.is-distortion-mode .metrics,
+  .workspace.is-distortion-mode .chart-panel {
+    grid-column: 1;
+  }
+
+  .workspace.is-distortion-mode .metrics {
+    grid-row: 2;
+  }
+
+  .workspace.is-distortion-mode .chart-panel {
+    grid-row: 1;
   }
 
   aside {

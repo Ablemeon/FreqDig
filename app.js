@@ -11,10 +11,33 @@ import {
   interpolate,
   interpolatePhase,
   parseCsv,
+  parseRewDistortion,
   smoothData,
   wrapPhaseDegrees
 } from "./src/audioMath.js";
 import { cleanupCatAvatarEasterEgg, setupCatAvatarEasterEgg } from "./src/easterEgg.js";
+import {
+  DISTORTION_SERIES,
+  buildDistortionChartSeries as buildDistortionChartSeriesModel,
+  distortionAxisFixedMaxValue as distortionAxisFixedMaxValueModel,
+  distortionAxisUnit as distortionAxisUnitModel,
+  distortionDisplayValue as distortionDisplayValueModel,
+  distortionGroupPreviewClass as distortionGroupPreviewClassModel,
+  formatAuxiliaryPercentTick,
+  formatPercentTick as formatPercentTickModel,
+  formatPercentValue,
+  getAuxiliaryPercentTicksFromDbr,
+  getDistortionAnalysisRange as getDistortionAnalysisRangeModel,
+  getDistortionGroupStyle as getDistortionGroupStyleModel,
+  getDistortionRange as getDistortionRangeModel,
+  getDistortionSeriesSetting as getDistortionSeriesSettingModel,
+  getDistortionSummaryItems as getDistortionSummaryItemsModel,
+  getDistortionTicks as getDistortionTicksModel,
+  getEnabledDistortionMeasurements as getEnabledDistortionMeasurementsModel,
+  getVisibleDistortionMeasurement as getVisibleDistortionMeasurementModel,
+  isDistortionPercentMode as isDistortionPercentModeModel
+} from "./src/distortion.js";
+import { renderDistortionCurveControls as renderDistortionCurveControlsPanel } from "./src/distortionPanel.js";
 import {
   downloadTextFile,
   getExportPngDataUrl as buildExportPngDataUrl,
@@ -25,6 +48,7 @@ import {
 } from "./src/chartExport.js";
 import { installLiquidGlassFilter } from "./src/liquidGlassFilter.js";
 import { MetricAnimationController } from "./src/metricAnimation.js";
+import { createThemeController } from "./src/themeController.js";
 import { DEFAULT_USER_SETTINGS, clampProbability, loadUserSettings, normalizeTheme, saveUserSettings } from "./src/userSettings.js";
 import { getDemoCurves, getDemoTarget } from "./examples/demoData.js";
 
@@ -94,18 +118,28 @@ const state = {
   easterEggTriggerProbability: DEFAULT_USER_SETTINGS.easterEggTriggerProbability,
   easterEggBurstProbability: DEFAULT_USER_SETTINGS.easterEggBurstProbability,
   mineCartAnimationEnabled: DEFAULT_USER_SETTINGS.mineCartAnimationEnabled,
-  theme: DEFAULT_USER_SETTINGS.theme
+  theme: DEFAULT_USER_SETTINGS.theme,
+  distortionMode: false,
+  distortionMeasurements: [],
+  distortionAxisMin: null,
+  distortionAxisMax: null,
+  distortionAxisMode: "dbr",
+  distortionAnalysisRange: "full"
 };
 
 // --- DOM references ---
 const canvas = document.getElementById("chart");
 const ctx = canvas.getContext("2d");
 const curveFiles = document.getElementById("curveFiles");
+const curveFilesButton = curveFiles.closest(".file-button");
 const targetFile = document.getElementById("targetFile");
+const targetFileButton = targetFile.closest(".file-button");
 const projectFile = document.getElementById("projectFile");
 const curveList = document.getElementById("curveList");
 const reference = document.getElementById("reference");
 const mode = document.getElementById("mode");
+const distortionModeToggle = document.getElementById("distortionModeToggle");
+const distortionAnalysisRange = document.getElementById("distortionAnalysisRange");
 const emptyState = document.getElementById("emptyState");
 const chartTooltip = document.getElementById("chartTooltip");
 const tiltInput = document.getElementById("tiltInput");
@@ -133,7 +167,10 @@ const easterBurstSetting = document.getElementById("easterBurstSetting");
 const mineCartAnimationSetting = document.getElementById("mineCartAnimationSetting");
 const themeSetting = document.getElementById("themeSetting");
 const exportDeviationSummary = document.getElementById("exportDeviationSummary");
+const exportDeviationSummaryLabel = exportDeviationSummary?.closest("label");
+const exportDeviationSummaryText = exportDeviationSummaryLabel?.querySelector("span");
 const toolbar = document.querySelector(".toolbar");
+const workspace = document.querySelector(".workspace");
 const xMinSlider = document.getElementById("xMinSlider");
 const xMaxSlider = document.getElementById("xMaxSlider");
 const yZoomSlider = document.getElementById("yZoomSlider");
@@ -151,6 +188,10 @@ const yZoomTip = document.getElementById("yZoomTip");
 const xRangeTrack = document.getElementById("xRangeTrack");
 const bandIndicatorOverlay = document.getElementById("bandIndicatorOverlay");
 const metricAnimationStage = document.getElementById("metricAnimationStage");
+const sidebarTitle = document.querySelector("aside .panel-title");
+const sidebarHint = document.querySelector("aside .hint");
+const metricsPanelTitle = document.querySelector(".metrics .panel-title");
+const metricGrid = document.querySelector(".metric-grid");
 document.querySelector(".chart-head")?.appendChild(globalSmoothing);
 
 // --- Runtime drawing state ---
@@ -172,7 +213,7 @@ const bandAnimationValues = new Map();
 const cssColorCache = new Map();
 let easterEggEnabled = true;
 let metricAnimationController = null;
-let themeTransitionTimer = null;
+let themeController = null;
 
 // --- Chart constants ---
 const MIN_FREQ = 20;
@@ -230,6 +271,10 @@ function getFrequencyRange() {
   return { minFreq, maxFreq };
 }
 
+function getDistortionAnalysisRange() {
+  return getDistortionAnalysisRangeModel(state.distortionAnalysisRange);
+}
+
 function resetAxisSettings() {
   state.axisMinFreq = MIN_FREQ;
   state.axisMaxFreq = MAX_FREQ;
@@ -237,6 +282,8 @@ function resetAxisSettings() {
   state.axisMinDb = null;
   state.axisMaxDb = null;
   state.axisDbStep = null;
+  state.distortionAxisMin = null;
+  state.distortionAxisMax = null;
 }
 
 function setFrequencyRangeFromLog(centerLog, spanOctaves) {
@@ -277,10 +324,22 @@ function syncZoomSliders() {
   updateXRangeTrack();
 
   if (chartView) {
-    const ySpan = chartView.maxDb - chartView.minDb;
-    yZoomSlider.value = String(Math.round(100 * (1 - Math.sqrt(clamp((ySpan - MIN_Y_SPAN_DB) / (MAX_Y_SPAN_DB - MIN_Y_SPAN_DB), 0, 1)))));
-    yZoomMaxLabel.textContent = `${chartView.maxDb.toFixed(0)} dB`;
-    yZoomMinLabel.textContent = `${chartView.minDb.toFixed(0)} dB`;
+    if (chartView.isDistortion) {
+      const ySpan = chartView.distortionScale === "log"
+        ? Math.log10(chartView.maxDb) - Math.log10(chartView.minDb)
+        : chartView.maxDb - chartView.minDb;
+      const fullSpan = chartView.distortionScale === "log"
+        ? Math.log10(chartView.autoMaxDb) - Math.log10(chartView.autoMinDb)
+        : chartView.autoMaxDb - chartView.autoMinDb;
+      yZoomSlider.value = String(Math.round(100 * (1 - clamp(ySpan / Math.max(0.0001, fullSpan), 0, 1))));
+      yZoomMaxLabel.textContent = formatPercentTick(chartView.maxDb);
+      yZoomMinLabel.textContent = formatPercentTick(chartView.minDb);
+    } else {
+      const ySpan = chartView.maxDb - chartView.minDb;
+      yZoomSlider.value = String(Math.round(100 * (1 - Math.sqrt(clamp((ySpan - MIN_Y_SPAN_DB) / (MAX_Y_SPAN_DB - MIN_Y_SPAN_DB), 0, 1)))));
+      yZoomMaxLabel.textContent = `${chartView.maxDb.toFixed(0)} dB`;
+      yZoomMinLabel.textContent = `${chartView.minDb.toFixed(0)} dB`;
+    }
   }
 
   syncBandButtons(minFreq, maxFreq);
@@ -336,6 +395,17 @@ function showImportWarnings(mdatFiles, emptyFiles) {
   if (emptyFiles.length) {
     alert(`以下文件没有识别到频率/声压数据：\n${emptyFiles.join("\n")}\n\n支持 CSV/TXT/FRD/DAT 文本数据，数据行格式为 frequency level，可带第三列 phase。`);
   }
+}
+
+function makeDistortionMeasurement(name, distortion) {
+  return {
+    id: makeId(),
+    name: distortion.name || name,
+    fileName: name,
+    data: distortion.data,
+    enabled: true,
+    seriesSettings: {}
+  };
 }
 
 // --- Curve creation, display transforms, and import ---
@@ -539,6 +609,18 @@ async function readFiles(files, isTarget = false) {
     }
 
     const text = await file.text();
+    const distortion = parseRewDistortion(text);
+    if (distortion && !isTarget) {
+      const measurement = makeDistortionMeasurement(file.name, distortion);
+      state.distortionMeasurements.push(measurement);
+      state.distortionMode = true;
+      state.axisMinFreq = MIN_FREQ;
+      state.axisMaxFreq = MAX_FREQ;
+      state.distortionAxisMin = null;
+      state.distortionAxisMax = null;
+      continue;
+    }
+
     const data = parseCsv(text);
     if (!data.length) {
       emptyFiles.push(file.name);
@@ -636,6 +718,11 @@ function getVisibleSeries() {
 
 // --- Canvas chart rendering ---
 function drawChart() {
+  if (state.distortionMode) {
+    drawDistortionChart();
+    return;
+  }
+
   const rect = canvas.parentElement.getBoundingClientRect();
   const dpr = getCanvasDpr(rect);
   canvas.width = Math.max(1, Math.floor(rect.width * dpr));
@@ -650,6 +737,7 @@ function drawChart() {
   const hasPhaseSeries = seriesHasPhase(series);
   const pad = { left: 62, right: hasPhaseSeries ? 58 : 24, top: 28, bottom: 48 };
   canvasWrap.classList.toggle("has-chart", Boolean(series.length));
+  emptyState.textContent = "拖入 CSV/TXT 文件或点击上方按钮导入曲线。若需要导入目标曲线，请点击上方“导入目标”按钮。";
   emptyState.style.display = series.length ? "none" : "grid";
   if (hoverPoint && !series.some((curve) => curve.id === hoverPoint.curve.id)) {
     hideTooltip();
@@ -698,6 +786,296 @@ function getCanvasDpr(rect) {
   return Math.max(1, Math.min(rawDpr, pixelLimitedDpr));
 }
 
+function getEnabledDistortionMeasurements() {
+  return getEnabledDistortionMeasurementsModel(state.distortionMeasurements);
+}
+
+function getDistortionGroupStyle(measurement) {
+  return getDistortionGroupStyleModel(state.distortionMeasurements, measurement);
+}
+
+function distortionGroupPreviewClass(measurement) {
+  return distortionGroupPreviewClassModel(state.distortionMeasurements, measurement);
+}
+
+function getVisibleDistortionMeasurement() {
+  return getVisibleDistortionMeasurementModel(state.distortionMeasurements);
+}
+
+function getDistortionSeriesSetting(key, measurement = getVisibleDistortionMeasurement()) {
+  return getDistortionSeriesSettingModel(key, measurement, getVisibleDistortionMeasurement(), normalizeColor);
+}
+
+function isDistortionPercentMode() {
+  return isDistortionPercentModeModel(state.distortionAxisMode);
+}
+
+function distortionAxisUnit() {
+  return distortionAxisUnitModel(state.distortionAxisMode);
+}
+
+function distortionDisplayValue(point, key) {
+  return distortionDisplayValueModel(point, key, state.distortionAxisMode);
+}
+
+function distortionAxisFixedMaxValue() {
+  return distortionAxisFixedMaxValueModel(state.distortionAxisMode);
+}
+
+function getDistortionRange(measurements, minFreq, maxFreq) {
+  return getDistortionRangeModel({
+    measurements,
+    minFreq,
+    maxFreq,
+    axisMode: state.distortionAxisMode,
+    axisMin: state.distortionAxisMin,
+    getSeriesSetting: getDistortionSeriesSetting
+  });
+}
+
+function buildDistortionChartSeries(measurements, minFreq, maxFreq) {
+  return buildDistortionChartSeriesModel({
+    measurements,
+    minFreq,
+    maxFreq,
+    axisMode: state.distortionAxisMode,
+    getSeriesSetting: getDistortionSeriesSetting,
+    getGroupStyle: getDistortionGroupStyle
+  });
+}
+
+function getDistortionTicks(minValue, maxValue) {
+  return getDistortionTicksModel(minValue, maxValue, state.distortionAxisMode, niceDbStep);
+}
+
+function formatPercentTick(value) {
+  return formatPercentTickModel(value, state.distortionAxisMode);
+}
+
+function drawDistortionChart() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = getCanvasDpr(rect);
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const width = rect.width;
+  const height = rect.height;
+  ctx.clearRect(0, 0, width, height);
+
+  const measurements = getEnabledDistortionMeasurements();
+  canvasWrap.classList.toggle("has-chart", measurements.some((measurement) => measurement.data?.length));
+  emptyState.textContent = "导入 REW THD 文本文件后显示失真曲线。";
+  emptyState.style.display = measurements.some((measurement) => measurement.data?.length) ? "none" : "grid";
+
+  if (!measurements.some((measurement) => measurement.data?.length)) {
+    hideTooltip();
+    chartView = null;
+    renderBandIndicatorOverlay();
+    return;
+  }
+
+  const { minFreq, maxFreq } = getFrequencyRange();
+  const { minValue, maxValue, autoMinValue, autoMaxValue } = getDistortionRange(measurements, minFreq, maxFreq);
+  const series = buildDistortionChartSeries(measurements, minFreq, maxFreq);
+  if (hoverPoint && !series.some((curve) => curve.id === hoverPoint.curve.id)) {
+    hideTooltip();
+  }
+
+  const pad = { left: 70, right: 74, top: 30, bottom: 48 };
+  const plotW = width - pad.left - pad.right;
+  const fullPlotH = height - pad.top - pad.bottom;
+  const bandIndicatorHeight = state.showBandIndicator ? BAND_INDICATOR_HEIGHT : 0;
+  const plotH = Math.max(1, fullPlotH - bandIndicatorHeight);
+  const minLogFreq = Math.log10(minFreq);
+  const maxLogFreq = Math.log10(maxFreq);
+  const minLogValue = isDistortionPercentMode() ? Math.log10(minValue) : null;
+  const maxLogValue = isDistortionPercentMode() ? Math.log10(maxValue) : null;
+  const x = (freq) => pad.left + ((Math.log10(freq) - minLogFreq) / (maxLogFreq - minLogFreq)) * plotW;
+  const y = isDistortionPercentMode()
+    ? (value) => pad.top + (1 - ((Math.log10(value) - minLogValue) / (maxLogValue - minLogValue))) * plotH
+    : (value) => pad.top + (1 - ((value - minValue) / (maxValue - minValue))) * plotH;
+
+  chartView = {
+    series,
+    x,
+    y,
+    pad,
+    plotW,
+    plotH,
+    bandIndicatorHeight,
+    width,
+    height,
+    minFreq,
+    maxFreq,
+    minDb: minValue,
+    maxDb: maxValue,
+    autoMinDb: autoMinValue,
+    autoMaxDb: autoMaxValue,
+    distortionScale: isDistortionPercentMode() ? "log" : "linear",
+    minLogFreq,
+    maxLogFreq,
+    hasPhaseSeries: false,
+    isDistortion: true
+  };
+
+  drawDistortionGrid({ x, y, pad, plotW, plotH, width, height, minFreq, maxFreq, minValue, maxValue });
+  drawDistortionSeries(series, x, y, minFreq, maxFreq);
+  drawLegend(series, pad.left + 10, pad.top + 26);
+  drawMeasurementLabel();
+  if (hoverPoint) drawHoverGuide(hoverPoint);
+  renderBandIndicatorOverlay();
+  syncZoomSliders();
+}
+
+function drawDistortionGrid({ x, y, pad, plotW, plotH, width, height, minFreq, maxFreq, minValue, maxValue }) {
+  if (!transparentExportMode) {
+    const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+    gradient.addColorStop(0, cssColor("--chart-bg-top", "#ffffff"));
+    gradient.addColorStop(0.58, cssColor("--chart-bg-mid", "#fbfdfe"));
+    gradient.addColorStop(1, cssColor("--chart-bg-bottom", "#f3f8fa"));
+    ctx.fillStyle = isDarkTheme() ? "rgba(3, 12, 30, 0.025)" : gradient;
+    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+  }
+
+  drawFrequencyBandBackgrounds(x, pad, plotW, plotH, minFreq, maxFreq);
+
+  const majorFreqTicks = getMajorFrequencyTicks(minFreq, maxFreq);
+  const minorFreqTicks = getMinorFrequencyTicks(minFreq, maxFreq, majorFreqTicks);
+  ctx.lineWidth = 1;
+  ctx.font = "12px Arial";
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.strokeStyle = cssColor("--chart-grid-minor", "#e3ebef");
+
+  for (const freq of minorFreqTicks) {
+    const px = x(freq);
+    ctx.beginPath();
+    ctx.moveTo(px, pad.top);
+    ctx.lineTo(px, pad.top + plotH);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#c8d5dd");
+  for (const freq of majorFreqTicks) {
+    const px = x(freq);
+    ctx.beginPath();
+    ctx.moveTo(px, pad.top);
+    ctx.lineTo(px, pad.top + plotH);
+    ctx.stroke();
+    ctx.fillText(formatFrequencyTick(freq), px - 10, state.showBandIndicator ? pad.top + plotH + BAND_INDICATOR_HEIGHT + 16 : height - 20);
+  }
+
+  for (const value of getDistortionTicks(minValue, maxValue)) {
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(pad.left + plotW, py);
+    ctx.stroke();
+    ctx.fillText(formatPercentTick(value), 18, py + 4);
+  }
+
+  drawDistortionRightAxis({ pad, plotW, plotH, minValue, maxValue });
+
+  ctx.fillText("频率 (Hz，对数坐标)", pad.left + plotW / 2 - 58, height - 6);
+  ctx.save();
+  ctx.translate(16, pad.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(`失真 (${distortionAxisUnit()})`, 0, 0);
+  ctx.restore();
+
+  ctx.strokeStyle = cssColor("--chart-axis", "#849aa8");
+  ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+}
+
+function drawDistortionRightAxis({ pad, plotW, plotH, minValue, maxValue }) {
+  const axisX = pad.left + plotW;
+  ctx.save();
+  ctx.textAlign = "left";
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#c8d5dd");
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.font = "12px Arial";
+
+  if (isDistortionPercentMode()) {
+    const minDbr = 20 * Math.log10(minValue / 100);
+    const maxDbr = 20 * Math.log10(maxValue / 100);
+    const step = niceDbStep((maxDbr - minDbr) / 8);
+    for (let value = Math.ceil(minDbr / step) * step; value <= maxDbr; value += step) {
+      const percent = 100 * (10 ** (value / 20));
+      const py = pad.top + (1 - ((Math.log10(percent) - Math.log10(minValue)) / (Math.log10(maxValue) - Math.log10(minValue)))) * plotH;
+      drawRightAxisTick(axisX, py, `${Number(value.toFixed(0))} dBr`);
+    }
+    drawRightAxisLabel(axisX + 52, pad.top + plotH / 2, "dBr");
+  } else {
+    const minDbr = minValue;
+    const maxDbr = maxValue;
+    for (const percent of getAuxiliaryPercentTicksFromDbr(minDbr, maxDbr)) {
+      const dbr = 20 * Math.log10(percent / 100);
+      const py = pad.top + (1 - ((dbr - minDbr) / (maxDbr - minDbr))) * plotH;
+      drawRightAxisTick(axisX, py, formatAuxiliaryPercentTick(percent));
+    }
+    drawRightAxisLabel(axisX + 52, pad.top + plotH / 2, "%");
+  }
+
+  ctx.restore();
+}
+
+function drawRightAxisTick(axisX, y, label) {
+  ctx.beginPath();
+  ctx.moveTo(axisX, y);
+  ctx.lineTo(axisX + 5, y);
+  ctx.stroke();
+  ctx.fillText(label, axisX + 8, y + 4);
+}
+
+function drawRightAxisLabel(x, y, label) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(label, 0, 0);
+  ctx.restore();
+}
+
+function drawDistortionSeries(series, x, y, minFreq, maxFreq) {
+  const dimStrength = getDimStrength();
+  for (const curve of series) {
+    const hoverStrength = getHoverStrength(curve, "level");
+    const curveColor = displayCurveColor(curve.color);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(chartView.pad.left, chartView.pad.top, chartView.plotW, chartView.plotH);
+    ctx.clip();
+    ctx.globalAlpha = lerp(1, hoverStrength > 0 ? 1 : 0.12, dimStrength);
+    ctx.strokeStyle = curveColor;
+    ctx.lineWidth = lerp(curve.width || 2, (curve.width || 2) + 3, hoverStrength);
+    if (hoverStrength > 0) {
+      ctx.shadowColor = curveColor;
+      ctx.shadowBlur = lerp(0, 9, hoverStrength);
+    }
+    ctx.setLineDash(curve.dash || []);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+
+    const drawData = getDrawablePoints(curve.data, x, y, minFreq, maxFreq);
+    let started = false;
+    for (const point of drawData) {
+      if (!started) {
+        ctx.moveTo(x(point.frequency), y(point.level));
+        started = true;
+      } else {
+        ctx.lineTo(x(point.frequency), y(point.level));
+      }
+    }
+
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
+
 function scheduleLightweightDraw() {
   if (lightweightDrawFrame) return;
 
@@ -708,6 +1086,11 @@ function scheduleLightweightDraw() {
 }
 
 function drawCurrentChartView() {
+  if (state.distortionMode) {
+    drawChart();
+    return;
+  }
+
   if (!chartView) {
     drawChart();
     return;
@@ -1401,7 +1784,18 @@ function hideTooltip() {
   }, 160);
 }
 
+function formatDistortionTooltipValue(value) {
+  if (!Number.isFinite(value)) return "-";
+  if (isDistortionPercentMode()) return formatPercentValue(value);
+  return `${value.toFixed(2)} ${distortionAxisUnit()}`;
+}
+
 function updateTooltip(point, mouseX, mouseY) {
+  if (chartView?.isDistortion) {
+    updateDistortionTooltip(point, mouseX, mouseY);
+    return;
+  }
+
   const rows = (point.readings || []).map((reading) => `
     <div class="tooltip-series${reading.curve.id === point.curve.id ? " is-active" : ""}">
       <span class="tooltip-swatch" style="background:${displayCurveColor(reading.curve.color)}"></span>
@@ -1414,6 +1808,47 @@ function updateTooltip(point, mouseX, mouseY) {
     <div class="tooltip-name" style="color:${displayCurveColor(point.curve.color)}">${escapeHtml(point.curve.name)}</div>
     <div class="tooltip-row"><span>频点</span><strong>${formatFrequency(point.frequency)}</strong></div>
     <div class="tooltip-row"><span>${point.kind === "phase" ? point.phaseLabel : "声压"}</span><strong>${point.kind === "phase" ? `${point.phase.toFixed(1)}°` : `${point.level.toFixed(2)} dB`}</strong></div>
+    <div class="tooltip-readings">${rows}</div>
+  `;
+
+  clearTimeout(chartTooltip.hideTimer);
+  chartTooltip.hidden = false;
+  requestAnimationFrame(() => chartTooltip.classList.add("is-visible"));
+
+  const wrap = canvas.parentElement.getBoundingClientRect();
+  const tooltipRect = chartTooltip.getBoundingClientRect();
+  const margin = 12;
+  let left = mouseX + margin;
+  let top = mouseY + margin;
+
+  if (left + tooltipRect.width > wrap.width) left = mouseX - tooltipRect.width - margin;
+  if (top + tooltipRect.height > wrap.height) top = mouseY - tooltipRect.height - margin;
+
+  left = Math.max(8, left);
+  top = Math.max(8, top);
+  if (!tooltipPosition) {
+    tooltipPosition = { x: left, y: top };
+  } else {
+    tooltipPosition.x = lerp(tooltipPosition.x, left, TOOLTIP_FOLLOW_EASING);
+    tooltipPosition.y = lerp(tooltipPosition.y, top, TOOLTIP_FOLLOW_EASING);
+  }
+  chartTooltip.style.left = `${tooltipPosition.x}px`;
+  chartTooltip.style.top = `${tooltipPosition.y}px`;
+}
+
+function updateDistortionTooltip(point, mouseX, mouseY) {
+  const rows = (point.readings || []).map((reading) => `
+    <div class="tooltip-series${reading.curve.id === point.curve.id ? " is-active" : ""}">
+      <span class="tooltip-swatch" style="background:${displayCurveColor(reading.curve.color)}"></span>
+      <span class="tooltip-series-name">${escapeHtml(reading.curve.name)}</span>
+      <strong>${formatDistortionTooltipValue(reading.level)}</strong>
+    </div>
+  `).join("");
+
+  chartTooltip.innerHTML = `
+    <div class="tooltip-name" style="color:${displayCurveColor(point.curve.color)}">${escapeHtml(point.curve.name)}</div>
+    <div class="tooltip-row"><span>频点</span><strong>${formatFrequency(point.frequency)}</strong></div>
+    <div class="tooltip-row"><span>失真</span><strong>${formatDistortionTooltipValue(point.level)}</strong></div>
     <div class="tooltip-readings">${rows}</div>
   `;
 
@@ -1631,7 +2066,7 @@ function getLegendItems(series) {
       curve,
       seriesKey: "level",
       label: curve.name,
-      dash: []
+      dash: curve.dash || []
     });
 
     for (const phaseLine of curve.phaseSeries || []) {
@@ -1788,7 +2223,7 @@ function buildChartSvg() {
   parts.push(buildLegendSvg(series, pad.left + 10, pad.top + 26));
   parts.push(buildBandIndicatorSvg(x, pad, plotW, plotH, minFreq, maxFreq));
   parts.push(buildWatermarkSvg());
-  if (state.exportDeviationSummary) parts.push(buildExportSummarySvg(width, height, summaryHeight));
+  if (state.exportDeviationSummary) parts.push(buildExportSummarySvg(width, height, summaryHeight, getExportSummaryTitle(), getExportSummaryItems()));
   parts.push(`</svg>`);
 
   return parts.join("\n");
@@ -1906,8 +2341,7 @@ function buildWatermarkSvg() {
   ].join("\n");
 }
 
-function buildExportSummarySvg(width, y, height) {
-  const items = getDeviationSummaryItems();
+function buildExportSummarySvg(width, y, height, title, items) {
   const gap = 10;
   const padX = 18;
   const top = y + 10;
@@ -1918,7 +2352,7 @@ function buildExportSummarySvg(width, y, height) {
   const parts = [
     `<g id="export-deviation-summary">`,
     `<rect x="0" y="${svgNumber(y)}" width="${svgNumber(width)}" height="${svgNumber(height)}" fill="#f7fbfc"/>`,
-    svgText("偏差概要", padX, y + 21, { fill: "#203542", size: 12, weight: "700" })
+    svgText(title, padX, y + 21, { fill: "#203542", size: 12, weight: "700" })
   ];
 
   primaryItems.forEach((item, index) => {
@@ -2190,6 +2624,10 @@ async function loadProjectFile(file) {
 // --- Sidebar and summary rendering ---
 function renderCurveList() {
   curveList.innerHTML = "";
+  if (state.distortionMode) {
+    renderDistortionCurveControls();
+    return;
+  }
 
   for (const curve of state.curves) {
     const phaseDisabled = curve.hasPhase ? "" : "disabled";
@@ -2398,13 +2836,66 @@ function renderCurveList() {
   }
 }
 
+function renderDistortionCurveControls() {
+  renderDistortionCurveControlsPanel({
+    curveList,
+    state,
+    lockedFrequencyBands,
+    render,
+    renderTitle,
+    hideTooltip,
+    getDistortionGroupStyle,
+    distortionGroupPreviewClass,
+    getDistortionSeriesSetting,
+    escapeHtml,
+    trashIcon,
+    formatFrequency
+  });
+}
+
 function renderControls() {
   mode.value = state.mode;
+  workspace?.classList.toggle("is-distortion-mode", state.distortionMode);
+  document.body.classList.toggle("is-distortion-mode", state.distortionMode);
+  canvasWrap.classList.toggle("is-distortion-mode", state.distortionMode);
+  if (sidebarTitle) sidebarTitle.textContent = state.distortionMode ? "失真曲线" : "曲线";
+  if (sidebarHint) {
+    sidebarHint.textContent = state.distortionMode
+      ? "失真模式支持 REW 导出的 THD 文本文件；可控制 THD、Noise 与各阶谐波的显隐和颜色。"
+      : "CSV 支持 frequency_hz, level_db 表头，也支持逗号、Tab、分号或空格分隔的两列数字。频率轴使用对数坐标。";
+  }
+  distortionModeToggle?.classList.toggle("is-active", state.distortionMode);
+  distortionModeToggle?.setAttribute("aria-pressed", String(state.distortionMode));
+  if (distortionModeToggle) {
+    distortionModeToggle.innerHTML = `
+      <span class="mode-switch-thumb" aria-hidden="true"></span>
+      <span class="mode-switch-label${state.distortionMode ? "" : " is-active"}">曲线</span>
+      <span class="mode-switch-label${state.distortionMode ? " is-active" : ""}">失真</span>
+    `;
+    distortionModeToggle.title = state.distortionMode ? "切换到曲线模式" : "切换到失真模式";
+    distortionModeToggle.setAttribute("aria-label", distortionModeToggle.title);
+  }
+  distortionModeToggle.disabled = false;
+  mode.disabled = state.distortionMode;
+  mode.hidden = state.distortionMode;
+  reference.disabled = state.distortionMode;
+  reference.hidden = state.distortionMode;
+  if (curveFilesButton) {
+    curveFilesButton.hidden = false;
+    curveFilesButton.childNodes[0].nodeValue = state.distortionMode ? "导入失真" : "导入曲线";
+  }
+  if (targetFileButton) targetFileButton.hidden = state.distortionMode;
+  if (distortionAnalysisRange) {
+    distortionAnalysisRange.hidden = !state.distortionMode;
+    distortionAnalysisRange.value = getDistortionAnalysisRange().id;
+  }
   curveTilt.checked = state.applyTiltToCurves;
   targetTilt.checked = state.applyTiltToTarget;
   alignTarget.checked = state.alignTarget;
   bandIndicator.checked = state.showBandIndicator;
   exportDeviationSummary.checked = state.exportDeviationSummary;
+  if (exportDeviationSummaryText) exportDeviationSummaryText.textContent = state.distortionMode ? "导出失真分析" : "导出偏差概要";
+  if (exportDeviationSummaryLabel) exportDeviationSummaryLabel.title = state.distortionMode ? "导出时在图表下方附加失真分析" : "导出时在图表下方附加偏差概要";
   globalSmoothing.classList.toggle("is-active", state.globalSmoothing);
   globalSmoothing.setAttribute("aria-pressed", String(state.globalSmoothing));
   targetTilt.disabled = !state.target;
@@ -2419,7 +2910,8 @@ function renderControls() {
   }
 
   reference.value = state.referenceId || "";
-  reference.disabled = state.curves.length < 2 || state.mode !== "reference";
+  reference.disabled = state.distortionMode || state.curves.length < 2 || state.mode !== "reference";
+  reference.hidden = state.distortionMode;
 
   if (state.mode === "target" && !state.target) {
     state.mode = "raw";
@@ -2500,15 +2992,54 @@ function getDeviationSummaryItems() {
   ];
 }
 
+function getExportSummaryTitle() {
+  return state.distortionMode ? "失真分析" : "偏差概要";
+}
+
+function getExportSummaryItems() {
+  return state.distortionMode ? getDistortionSummaryItems() : getDeviationSummaryItems();
+}
+
+function getDistortionSummaryItems() {
+  return getDistortionSummaryItemsModel({
+    measurements: getEnabledDistortionMeasurements(),
+    range: getDistortionAnalysisRange(),
+    frequencyBands: FREQUENCY_BANDS,
+    formatFrequency
+  });
+}
+
+function setMetricItems(title, items) {
+  if (metricsPanelTitle) metricsPanelTitle.textContent = title;
+  const labels = [...document.querySelectorAll(".metrics .metric-label")];
+  const values = [
+    document.getElementById("avgDeviation"),
+    document.getElementById("maxDeviation"),
+    document.getElementById("subBassDeviation"),
+    document.getElementById("bassDeviation"),
+    document.getElementById("midDeviation"),
+    document.getElementById("highMidDeviation"),
+    document.getElementById("highDeviation")
+  ];
+
+  items.forEach((item, index) => {
+    if (labels[index]) labels[index].textContent = item.label;
+    if (values[index]) values[index].textContent = item.value;
+  });
+}
+
 function renderMetrics() {
-  const summary = getDeviationSummary();
-  document.getElementById("avgDeviation").textContent = formatDeviationValue(summary.avg);
-  document.getElementById("maxDeviation").textContent = formatDeviationValue(summary.max);
-  document.getElementById("subBassDeviation").textContent = formatDeviationValue(summary.subBass);
-  document.getElementById("bassDeviation").textContent = formatDeviationValue(summary.bass);
-  document.getElementById("midDeviation").textContent = formatDeviationValue(summary.mid);
-  document.getElementById("highMidDeviation").textContent = formatDeviationValue(summary.highMid);
-  document.getElementById("highDeviation").textContent = formatDeviationValue(summary.high);
+  if (state.distortionMode) {
+    setMetricItems("失真分析", getDistortionSummaryItems());
+    metricGrid?.classList.add("is-animation-disabled");
+    if (metricAnimationStage) metricAnimationStage.hidden = true;
+    return;
+  }
+
+  setMetricItems("偏差摘要", getDeviationSummaryItems());
+  metricGrid?.classList.toggle("is-animation-disabled", !state.mineCartAnimationEnabled);
+  if (metricAnimationStage) metricAnimationStage.hidden = !state.mineCartAnimationEnabled;
+  metricAnimationController?.syncVisibility();
 }
 
 function setupMetricAnimation() {
@@ -2526,7 +3057,33 @@ function setMineCartAnimationEnabled(enabled) {
   metricAnimationController?.setEnabled(state.mineCartAnimationEnabled);
 }
 
+function setDistortionMode(enabled) {
+  state.distortionMode = Boolean(enabled);
+  if (state.distortionMode) {
+    const range = getDistortionAnalysisRange();
+    state.axisMinFreq = range.min;
+    state.axisMaxFreq = range.max;
+  }
+  hideTooltip();
+  render();
+}
+
 function renderTitle() {
+  if (state.distortionMode) {
+    const measurements = getEnabledDistortionMeasurements();
+    document.getElementById("chartTitle").textContent = "失真模式";
+    const { minFreq, maxFreq } = getFrequencyRange();
+    const rangeText = `${formatFrequency(minFreq)} - ${formatFrequency(maxFreq)}`;
+    const analysisRange = getDistortionAnalysisRange();
+    const titleText = measurements.length === 1
+      ? (measurements[0].name || measurements[0].fileName)
+      : `${measurements.length} 组失真数据`;
+    document.getElementById("chartSubtitle").textContent = measurements.length
+      ? `${titleText} / ${rangeText} / ${analysisRange.label} / THD 与谐波失真 (${distortionAxisUnit()})`
+      : `${rangeText} / ${analysisRange.label} / 导入 REW THD 文本文件`;
+    return;
+  }
+
   const titles = {
     raw: "原始曲线",
     reference: "相对基准差异",
@@ -2570,6 +3127,22 @@ targetFile.addEventListener("change", async (event) => {
   } finally {
     targetFile.value = "";
   }
+});
+
+distortionModeToggle.addEventListener("click", () => {
+  setDistortionMode(!state.distortionMode);
+});
+
+distortionAnalysisRange?.addEventListener("change", (event) => {
+  state.distortionAnalysisRange = event.target.value;
+  const range = getDistortionAnalysisRange();
+  state.axisMinFreq = range.min;
+  state.axisMaxFreq = range.max;
+  state.axisFreqStepOctaves = null;
+  state.distortionAxisMin = null;
+  state.distortionAxisMax = null;
+  hideTooltip();
+  render();
 });
 
 ["dragenter", "dragover"].forEach((eventName) => {
@@ -2655,6 +3228,30 @@ function updateXRangeFromSliders(activeSlider) {
 }
 
 function updateYZoomFromSlider() {
+  if (chartView?.isDistortion) {
+    const value = 1 - Number(yZoomSlider.value) / 100;
+    if (chartView.distortionScale === "log") {
+      const autoMin = positiveNumber(chartView.autoMinDb, 0.001);
+      const autoMax = positiveNumber(chartView.autoMaxDb, 10);
+      const autoMinLog = Math.log10(autoMin);
+      const autoMaxLog = Math.log10(autoMax);
+      const fullSpan = Math.max(0.1, autoMaxLog - autoMinLog);
+      const span = Math.max(0.1, fullSpan * value);
+      state.distortionAxisMin = 10 ** (autoMaxLog - span);
+      state.distortionAxisMax = null;
+    } else {
+      const fullSpan = Math.max(1, chartView.autoMaxDb - chartView.autoMinDb);
+      const span = Math.max(1, fullSpan * value);
+      state.distortionAxisMin = chartView.autoMaxDb - span;
+      state.distortionAxisMax = null;
+    }
+    showZoomTip(yZoomTip, `${formatPercentTick(state.distortionAxisMin)} - ${formatPercentTick(chartView.autoMaxDb)}`);
+    hideTooltip();
+    renderTitle();
+    drawChart();
+    return;
+  }
+
   const value = 1 - Number(yZoomSlider.value) / 100;
   const currentMin = chartView?.minDb ?? state.axisMinDb ?? -10;
   const currentMax = chartView?.maxDb ?? state.axisMaxDb ?? 10;
@@ -2795,7 +3392,8 @@ function getExportPngDataUrl(transparent) {
     state,
     chartView,
     getCanvasDpr,
-    getDeviationSummaryItems,
+    getExportSummaryTitle,
+    getExportSummaryItems,
     frequencyBands: FREQUENCY_BANDS,
     bandIndicatorHeight: BAND_INDICATOR_HEIGHT,
     isFrequencyBandActive
@@ -2809,66 +3407,11 @@ function revealAppSettingsButton() {
 }
 
 function setTheme(value, options = {}) {
-  const theme = normalizeTheme(value);
-  const persist = options.persist !== false;
-  const redraw = options.redraw !== false;
-  state.theme = theme;
-  document.body.dataset.theme = theme;
-  cssColorCache.clear();
-  themeToggle.classList.toggle("is-dark", theme === "dark");
-  themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
-  themeToggle.title = theme === "dark" ? "切换亮色模式" : "切换暗色模式";
-  themeToggle.setAttribute("aria-label", themeToggle.title);
-  if (themeSetting) themeSetting.checked = theme === "dark";
-  if (persist) saveUserSettings(state);
-  if (redraw) {
-    renderCurveList();
-    drawChart();
-  }
+  themeController.setTheme(value, options);
 }
 
 function toggleTheme() {
-  const nextTheme = state.theme === "dark" ? "light" : "dark";
-  if (nextTheme === "dark") {
-    playDarkThemeTransition(() => setTheme("dark"));
-    return;
-  }
-  setTheme("light");
-}
-
-function playDarkThemeTransition(onRevealComplete) {
-  const rect = themeToggle.getBoundingClientRect();
-  const originX = `${rect.left + rect.width / 2}px`;
-  const originY = `${rect.top + rect.height / 2}px`;
-  document.body.style.setProperty("--theme-origin-x", originX);
-  document.body.style.setProperty("--theme-origin-y", originY);
-
-  const clone = document.documentElement.cloneNode(true);
-  clone.querySelectorAll("script").forEach((script) => script.remove());
-  clone.querySelectorAll(".theme-wipe-overlay").forEach((node) => node.remove());
-  clone.querySelector("body")?.setAttribute("data-theme", "dark");
-  clone.querySelector("body")?.classList.add("theme-scene-enter");
-
-  const overlay = document.createElement("iframe");
-  overlay.className = "theme-wipe-overlay";
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.tabIndex = -1;
-  document.body.appendChild(overlay);
-  overlay.contentDocument.open();
-  overlay.contentDocument.write(`<!DOCTYPE html>${clone.outerHTML}`);
-  overlay.contentDocument.close();
-
-  document.body.classList.remove("theme-scene-enter");
-
-  window.clearTimeout(themeTransitionTimer);
-  window.setTimeout(() => {
-    onRevealComplete?.();
-    document.body.classList.add("theme-scene-enter");
-  }, 760);
-  themeTransitionTimer = window.setTimeout(() => {
-    overlay.remove();
-    document.body.classList.remove("theme-scene-enter");
-  }, 1680);
+  themeController.toggleTheme();
 }
 
 function openAppSettings() {
@@ -2909,6 +3452,10 @@ function applyAppSettingsFromForm() {
 // --- Pan and zoom interactions ---
 function panChart(deltaX, deltaY) {
   if (!chartView) return;
+  if (chartView.isDistortion) {
+    panDistortionChart(deltaX, deltaY);
+    return;
+  }
 
   const { minFreq, maxFreq, minDb, maxDb, plotW, plotH } = chartView;
   const minLog = Math.log2(minFreq);
@@ -2929,6 +3476,10 @@ function panChart(deltaX, deltaY) {
 
 function zoomChart(factor, mouseX, mouseY) {
   if (!chartView) return;
+  if (chartView.isDistortion) {
+    zoomDistortionChart(factor, mouseX, mouseY);
+    return;
+  }
 
   const { pad, plotW, plotH, minFreq, maxFreq, minDb, maxDb } = chartView;
   const xRatio = clamp((mouseX - pad.left) / plotW, 0, 1);
@@ -2949,6 +3500,52 @@ function zoomChart(factor, mouseX, mouseY) {
   setFrequencyRangeFromLog((nextMinLog + nextMaxLog) / 2, nextXSpan);
   state.axisMinDb = nextMinDb;
   state.axisMaxDb = nextMaxDb;
+  hideTooltip();
+  renderTitle();
+  drawChart();
+}
+
+function panDistortionChart(deltaX, deltaY) {
+  const { minFreq, maxFreq, minDb, maxDb, plotW, plotH } = chartView;
+  const minLog = Math.log2(minFreq);
+  const maxLog = Math.log2(maxFreq);
+  const xSpan = maxLog - minLog;
+  const minValue = chartView.distortionScale === "log" ? Math.log10(minDb) : minDb;
+  const maxValue = chartView.distortionScale === "log" ? Math.log10(maxDb) : maxDb;
+  const ySpan = maxValue - minValue;
+
+  if (deltaX) {
+    setFrequencyRangeFromLog((minLog + maxLog) / 2 - (deltaX / plotW) * xSpan, xSpan);
+  }
+  if (deltaY) {
+    const nextSpan = Math.max(0.1, ySpan * (1 + (deltaY / plotH)));
+    state.distortionAxisMin = chartView.distortionScale === "log" ? 10 ** (maxValue - nextSpan) : maxValue - nextSpan;
+    state.distortionAxisMax = null;
+  }
+  hideTooltip();
+  renderTitle();
+  drawChart();
+}
+
+function zoomDistortionChart(factor, mouseX, mouseY) {
+  const { pad, plotW, plotH, minFreq, maxFreq, minDb, maxDb } = chartView;
+  const xRatio = clamp((mouseX - pad.left) / plotW, 0, 1);
+  const minLog = Math.log2(minFreq);
+  const maxLog = Math.log2(maxFreq);
+  const xSpan = maxLog - minLog;
+  const minValue = chartView.distortionScale === "log" ? Math.log10(minDb) : minDb;
+  const maxValue = chartView.distortionScale === "log" ? Math.log10(maxDb) : maxDb;
+  const ySpan = maxValue - minValue;
+  const focalLog = minLog + xRatio * xSpan;
+  const nextXSpan = xSpan * factor;
+  const nextYSpan = Math.max(0.1, ySpan * factor);
+  const nextMinLog = focalLog - xRatio * nextXSpan;
+  const nextMaxLog = nextMinLog + nextXSpan;
+  const nextMinValue = maxValue - nextYSpan;
+
+  setFrequencyRangeFromLog((nextMinLog + nextMaxLog) / 2, nextXSpan);
+  state.distortionAxisMin = chartView.distortionScale === "log" ? 10 ** nextMinValue : nextMinValue;
+  state.distortionAxisMax = null;
   hideTooltip();
   renderTitle();
   drawChart();
@@ -3078,6 +3675,16 @@ document.addEventListener("visibilitychange", () => {
 });
 
 Object.assign(state, loadUserSettings());
+themeController = createThemeController({
+  state,
+  themeToggle,
+  themeSetting,
+  normalizeTheme,
+  saveUserSettings,
+  cssColorCache,
+  renderCurveList,
+  drawChart
+});
 setTheme(state.theme, { persist: false, redraw: false });
 render();
 setupMetricAnimation();

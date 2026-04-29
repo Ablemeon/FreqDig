@@ -28,6 +28,58 @@ export function parseCsv(text) {
   return data.sort((a, b) => a.frequency - b.frequency);
 }
 
+export function parseRewDistortion(text) {
+  const lines = text.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const headerIndex = lines.findIndex((line) => /^\*?\s*Freq\s*\(Hz\)/i.test(line) && /THD\s*\(%\)/i.test(line));
+  if (headerIndex < 0) return null;
+
+  const columns = lines[headerIndex]
+    .replace(/^\*?\s*/, "")
+    .split(/\s*,\s*/)
+    .map((column) => column.trim());
+  const data = [];
+
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (!line || line.startsWith("*")) continue;
+    const cells = line.split(/\s*,\s*/).map((cell) => Number(cell.trim()));
+    if (cells.length < 4) continue;
+
+    const point = {
+      frequency: cells[0],
+      fundamental: cells[1],
+      thd: cells[2],
+      noise: cells[3],
+      harmonics: {}
+    };
+
+    if (!Number.isFinite(point.frequency) || point.frequency <= 0) continue;
+    if (!Number.isFinite(point.fundamental) || !Number.isFinite(point.thd)) continue;
+
+    for (let index = 4; index < Math.min(cells.length, columns.length); index++) {
+      const match = columns[index]?.match(/^H(\d+)\s*\(%\)$/i);
+      if (match && Number.isFinite(cells[index])) {
+        point.harmonics[`h${match[1]}`] = cells[index];
+      }
+    }
+
+    data.push(point);
+  }
+
+  if (!data.length) return null;
+
+  const measurementLine = lines.find((line) => /^\*\s*Measurement:/i.test(line));
+  const measurementName = measurementLine
+    ? measurementLine.replace(/^\*\s*Measurement:\s*/i, "").trim()
+    : "";
+
+  return {
+    type: "rew-distortion",
+    name: measurementName,
+    columns,
+    data: data.sort((a, b) => a.frequency - b.frequency)
+  };
+}
+
 export function dataHasPhase(data) {
   return data.some((point) => Number.isFinite(point.phase));
 }

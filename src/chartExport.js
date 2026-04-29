@@ -10,7 +10,8 @@ export function getExportPngDataUrl({
   state,
   chartView,
   getCanvasDpr,
-  getDeviationSummaryItems,
+  getExportSummaryTitle,
+  getExportSummaryItems,
   frequencyBands,
   bandIndicatorHeight,
   isFrequencyBandActive
@@ -40,7 +41,7 @@ export function getExportPngDataUrl({
     isFrequencyBandActive
   });
   if (state.exportDeviationSummary) {
-    drawExportSummaryCanvas(exportCtx, canvas.width / dpr, canvas.height / dpr, summaryHeight, transparent, getDeviationSummaryItems);
+    drawExportSummaryCanvas(exportCtx, canvas.width / dpr, canvas.height / dpr, summaryHeight, transparent, getExportSummaryTitle, getExportSummaryItems);
   }
   exportCtx.setTransform(1, 0, 0, 1, 0, 0);
   return exportCanvas.toDataURL("image/png");
@@ -120,8 +121,9 @@ function drawBandIndicatorLabelsCanvas(targetCtx, {
   targetCtx.restore();
 }
 
-function drawExportSummaryCanvas(targetCtx, width, y, height, transparent, getDeviationSummaryItems) {
-  const items = getDeviationSummaryItems();
+function drawExportSummaryCanvas(targetCtx, width, y, height, transparent, getExportSummaryTitle, getExportSummaryItems) {
+  const title = getExportSummaryTitle();
+  const items = getExportSummaryItems();
   const gap = 10;
   const padX = 18;
   const top = y + 10;
@@ -142,7 +144,7 @@ function drawExportSummaryCanvas(targetCtx, width, y, height, transparent, getDe
   targetCtx.font = "700 12px Inter, 'Segoe UI', Arial, sans-serif";
   targetCtx.fillStyle = "#203542";
   targetCtx.textBaseline = "middle";
-  targetCtx.fillText("偏差概要", padX, y + 21);
+  targetCtx.fillText(title, padX, y + 21);
 
   primaryItems.forEach((item, index) => {
     drawExportSummaryCardCanvas(targetCtx, item, padX + index * (primaryCardW + gap), top + 18, primaryCardW);

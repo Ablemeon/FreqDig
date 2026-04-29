@@ -165,6 +165,15 @@
           <option value="target">相对目标偏差</option>
         </select>
         <select id="reference"></select>
+        <select id="distortionAnalysisRange" class="distortion-analysis-range" aria-label="失真分析计算范围" hidden>
+          <option value="full">全频段 20-2w</option>
+          <option value="trusted">可信频段 100-2k</option>
+          <option value="trusted-wide">可信宽频 100-10k</option>
+          <option value="sub-low">超低频 20-60</option>
+          <option value="low">低频 60-300</option>
+          <option value="ultra-high">超高频 10k-20k</option>
+        </select>
+        <button id="distortionModeToggle" type="button" aria-pressed="false">失真模式</button>
         <button id="saveProject" type="button">保存工程</button>
         <label class="file-button">
           加载工程
