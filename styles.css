@@ -3172,6 +3172,11 @@ body[data-theme="dark"] header {
   overflow: visible;
 }
 
+body[data-theme="dark"] aside {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 body[data-theme="dark"] header > *,
 body[data-theme="dark"] aside > *,
 body[data-theme="dark"] .chart-panel > *,
