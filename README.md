@@ -7,6 +7,8 @@ FreqDig is a local frequency-response analysis tool for importing, comparing, vi
 
 Current version: `0.0.1`
 
+Changelog: [CHANGELOG.md](./CHANGELOG.md)
+
 <a id="中文"></a>
 <details open>
 <summary><strong>中文说明</strong></summary>
