@@ -649,6 +649,7 @@ function drawChart() {
   const series = getVisibleSeries();
   const hasPhaseSeries = seriesHasPhase(series);
   const pad = { left: 62, right: hasPhaseSeries ? 58 : 24, top: 28, bottom: 48 };
+  canvasWrap.classList.toggle("has-chart", Boolean(series.length));
   emptyState.style.display = series.length ? "none" : "grid";
   if (hoverPoint && !series.some((curve) => curve.id === hoverPoint.curve.id)) {
     hideTooltip();
