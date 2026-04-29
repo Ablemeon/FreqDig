@@ -5,6 +5,8 @@ All notable changes to this project are documented here.
 The format loosely follows Keep a Changelog. Versions should be moved from
 `Unreleased` into a dated release section when a release is prepared.
 
+[中文](./CHANGELOG.zh-CN.md) | English
+
 ## [Unreleased]
 
 ### Added

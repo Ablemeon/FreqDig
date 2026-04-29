@@ -7,7 +7,7 @@ FreqDig is a local frequency-response analysis tool for importing, comparing, vi
 
 Current version: `0.0.1`
 
-Changelog: [CHANGELOG.md](./CHANGELOG.md)
+Changelog: [English](./CHANGELOG.md) | [中文](./CHANGELOG.zh-CN.md)
 
 <a id="中文"></a>
 <details open>
@@ -40,6 +40,10 @@ FreqDig 是一个本地运行的轻量级频响曲线分析工具，用于导入
 - 支持水印、测量器型号和隐藏设置持久化
 - 支持 PNG、透明 PNG 和 SVG 导出
 - 支持导出图表时附加偏差概要
+- 支持导入 REW 导出的 THD 文本文件
+- 支持失真模式，可查看 THD、Noise 与各阶谐波失真曲线
+- 支持多组失真数据分组、重命名、移除和组间对比
+- 支持失真分析计算范围、百分比/dBr 纵轴切换和导出失真分析
 
 ## 数据格式
 
@@ -57,6 +61,8 @@ frequency, level_db, phase
 ```
 
 暂不直接解析 REW `.mdat` 二进制文件。请先在 REW 中导出为文本格式后再导入。
+
+REW 导出的 THD 文本文件会自动进入失真模式。失真模式支持 THD、Noise、H1-H9 曲线显示控制、组间对比、计算范围选择和失真分析导出。
 
 ## 运行环境
 
@@ -195,6 +201,10 @@ The project is built with native HTML/CSS/JavaScript and does not depend on a fr
 - Configure watermark text, measurement model text, and hidden settings with persistence
 - Export PNG, transparent PNG, and SVG charts
 - Optionally append a deviation summary to exported charts
+- Import REW THD text files
+- Use distortion mode to inspect THD, Noise, and harmonic distortion curves
+- Manage grouped distortion measurements with rename, remove, visibility, and comparison controls
+- Select distortion analysis ranges, switch percent/dBr axes, and append distortion analysis to exports
 
 ## Data Format
 
@@ -212,6 +222,8 @@ frequency, level_db, phase
 ```
 
 REW `.mdat` binary files are not parsed directly. Export measurements from REW as text files before importing them into FreqDig.
+
+REW THD text exports are detected automatically and opened in distortion mode. Distortion mode supports THD, Noise, H1-H9 visibility controls, grouped comparison, analysis range selection, and distortion analysis export.
 
 ## Requirements
 
