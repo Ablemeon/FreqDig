@@ -159,6 +159,7 @@ const easterEggToggle = document.getElementById("easterEggToggle");
 const appSettingsToggle = document.getElementById("appSettingsToggle");
 const appSettingsPanel = document.getElementById("appSettingsPanel");
 const appSettingsCancel = document.getElementById("appSettingsCancel");
+document.body.appendChild(appSettingsPanel);
 const themeToggle = document.getElementById("themeToggle");
 const watermarkSetting = document.getElementById("watermarkSetting");
 const measurementSetting = document.getElementById("measurementSetting");
