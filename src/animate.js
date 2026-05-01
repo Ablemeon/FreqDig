@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Sprite-sheet animator used by the optional metrics-panel animation.
+ * MetricAnimationController controls when this runs.
  */
 
 const SPRITE_SRC = new URL("../assets/cattymove-sprite.png", import.meta.url).href;
@@ -44,6 +47,7 @@ const ANIMATIONS = {
 const activeAnimators = new Set();
 
 export function createMineCartAnimator(options = {}) {
+  // Factory keeps active instances tracked for global cleanup.
   const animator = new MineCartAnimator(options);
   activeAnimators.add(animator);
   return animator;

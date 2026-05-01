@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Theme controller for light/dark mode.
+ * app.js provides persistence and redraw callbacks so this module stays UI-focused.
  */
 
 export function createThemeController({
@@ -18,6 +21,7 @@ export function createThemeController({
   let themeTransitionTimer = null;
 
   function setTheme(value, options = {}) {
+    // The single place that mutates DOM theme state and triggers chart recoloring.
     const theme = normalizeTheme(value);
     const persist = options.persist !== false;
     const redraw = options.redraw !== false;
@@ -48,6 +52,7 @@ export function createThemeController({
   }
 
   function playDarkThemeTransition(onRevealComplete) {
+    // Uses a temporary iframe snapshot so the wipe transition does not disturb live UI.
     const rect = themeToggle.getBoundingClientRect();
     const originX = `${rect.left + rect.width / 2}px`;
     const originY = `${rect.top + rect.height / 2}px`;

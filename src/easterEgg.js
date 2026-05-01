@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat (挖煤猫)
  * SPDX-License-Identifier: MIT
+ *
+ * Optional click-triggered avatar effect.
+ * app.js passes probabilities and cleanup hooks from user settings.
  */
 
 const DEFAULT_AVATAR_SRC = "./assets/catty.png";
@@ -13,6 +16,7 @@ const RAPID_BURST_MAX = 40;
 const burstTimers = new Set();
 
 export function setupCatAvatarEasterEgg(options = {}) {
+  // Event binding entry point; cleanupCatAvatarEasterEgg removes pending timers/elements.
   const target = options.target || document;
   const avatarSrc = options.avatarSrc || DEFAULT_AVATAR_SRC;
   const isEnabled = options.isEnabled || (() => true);

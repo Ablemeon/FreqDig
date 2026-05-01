@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat (挖煤猫)
  * SPDX-License-Identifier: MIT
+ *
+ * Tiny local static server for development.
+ * It serves files from the repository root and can optionally open the browser.
  */
 
 import http from "node:http";

@@ -2,9 +2,13 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Group delay is derived from the slope of unwrapped phase vs frequency.
+ * app.js uses this module for both chart series and the summary cards.
  */
 
 export function calculateGroupDelay(data) {
+  // delay = -d(phi) / d(omega); central differences reduce local point noise.
   const phaseData = unwrapPhaseData(data);
   if (phaseData.length < 3) return [];
 
@@ -69,6 +73,7 @@ export function getGroupDelaySummaryItems(series, range) {
 }
 
 function unwrapPhaseData(data) {
+  // Keep phase continuous before differentiating; wrapped +/-180 jumps create false spikes.
   let previousRawPhase = null;
   return data
     .filter((point) => Number.isFinite(point.frequency) && point.frequency > 0 && Number.isFinite(point.phase))

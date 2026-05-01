@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Optional animation controller for the metrics panel.
+ * It owns scheduling/pausing only; drawing is delegated to src/animate.js.
  */
 
 import { createMineCartAnimator } from "./animate.js";
@@ -9,6 +12,7 @@ import { createMineCartAnimator } from "./animate.js";
 const ANIMATIONS = ["railRide", "waveRide", "coalRide"];
 
 export class MetricAnimationController {
+  // app.js creates one instance and toggles it from user settings/page visibility.
   constructor({ stage, grid, enabled = true } = {}) {
     this.stage = stage;
     this.grid = grid || stage?.closest(".metric-grid") || null;

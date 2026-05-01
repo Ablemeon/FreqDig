@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat (挖煤猫)
  * SPDX-License-Identifier: MIT
+ *
+ * Shared parsing and DSP helpers for 2D charts.
+ * Keep UI/state out of this file; app.js owns how these results are displayed.
  */
 
 const MINIMUM_PHASE_GRID_POINTS = 768;
@@ -9,6 +12,7 @@ const MINIMUM_PHASE_FFT_MIN_BINS = 4096;
 const MINIMUM_PHASE_FFT_MAX_BINS = 131072;
 
 export function parseCsv(text) {
+  // Generic FR/phase parser: frequency, level, optional phase in CSV/TXT/FRD-like rows.
   const rows = text.trim().split(/\r?\n/).map((line) => line.trim().split(/[,\t; ]+/).map((cell) => cell.trim()));
   const data = [];
 
@@ -29,6 +33,7 @@ export function parseCsv(text) {
 }
 
 export function parseRewDistortion(text) {
+  // REW distortion exports have a named header row followed by comma-separated values.
   const lines = text.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const headerIndex = lines.findIndex((line) => /^\*?\s*Freq\s*\(Hz\)/i.test(line) && /THD\s*\(%\)/i.test(line));
   if (headerIndex < 0) return null;
@@ -142,30 +147,47 @@ export function smoothData(data, octaves) {
   const smoothed = [];
   let start = 0;
   let end = 0;
-  let sum = 0;
 
   for (let i = 0; i < data.length; i++) {
     const minLog = logFreqs[i] - halfWindow;
     const maxLog = logFreqs[i] + halfWindow;
 
     while (end < data.length && logFreqs[end] <= maxLog) {
-      sum += data[end].level;
       end++;
     }
 
     while (start < end && logFreqs[start] < minLog) {
-      sum -= data[start].level;
       start++;
+    }
+
+    let weightedSum = 0;
+    let weightSum = 0;
+    for (let index = start; index < end; index++) {
+      const level = data[index].level;
+      if (!Number.isFinite(level)) continue;
+      const distance = Math.abs(logFreqs[index] - logFreqs[i]);
+      const kernel = 0.5 + 0.5 * Math.cos(Math.PI * clamp(distance / halfWindow, 0, 1));
+      const spacing = localLogSpacing(logFreqs, index);
+      const weight = kernel * spacing;
+      weightedSum += level * weight;
+      weightSum += weight;
     }
 
     smoothed.push({
       frequency: data[i].frequency,
-      level: sum / (end - start),
+      level: weightSum > 0 ? weightedSum / weightSum : data[i].level,
       phase: data[i].phase
     });
   }
 
   return smoothed;
+}
+
+function localLogSpacing(logFreqs, index) {
+  const previous = index > 0 ? logFreqs[index - 1] : logFreqs[index];
+  const next = index < logFreqs.length - 1 ? logFreqs[index + 1] : logFreqs[index];
+  const spacing = (next - previous) / 2;
+  return Number.isFinite(spacing) && spacing > 0 ? spacing : 1;
 }
 
 function getOriginalPhaseData(displaySource) {

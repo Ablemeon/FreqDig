@@ -2,9 +2,13 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Export helpers for PNG/SVG. Runtime drawing stays in app.js;
+ * this file only builds export canvases and small SVG primitives.
  */
 
 export function getExportPngDataUrl({
+  // Adds optional frequency-band labels and analysis summary below the rendered chart.
   canvas,
   transparent,
   state,

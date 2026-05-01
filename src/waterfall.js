@@ -2,9 +2,13 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Builds waterfall data from a REW impulse response.
+ * Rendering is intentionally elsewhere: src/waterfall3d.js consumes this model.
  */
 
 export function buildWaterfallData(impulse, options = {}) {
+  // STFT-style analysis: window the impulse, FFT each time slice, sample log-spaced bins.
   const mode = options.mode === "rew" ? "rew" : "relative";
   const fftSize = options.fftSize || (mode === "rew" ? 32768 : 4096);
   const frameCount = clamp(Math.round(Number(options.frameCount) || 101), 20, 501);
@@ -68,6 +72,7 @@ export function buildWaterfallData(impulse, options = {}) {
     : [];
 
   for (const frame of frames) {
+    // `relative` is raw decay from global max; `rew` normalizes each bin like REW's view.
     frame.values = mode === "rew"
       ? frame.values.map((value, index) => {
         const reference = binReference[index] ?? maxDb;
@@ -97,6 +102,7 @@ export function buildWaterfallData(impulse, options = {}) {
 }
 
 export function getWaterfallSummaryItems(impulses, options = {}) {
+  // Feeds the bottom "Waterfall analysis" cards from current view/render settings.
   const visible = impulses.filter((impulse) => impulse.visible !== false);
   const view = options.view || {};
   const waterfall = options.waterfall || visible[0]?.waterfallCache || null;

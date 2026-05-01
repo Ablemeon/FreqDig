@@ -2,9 +2,13 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Distortion data model helpers.
+ * app.js and distortionPanel.js call this module to avoid duplicating THD/Hn logic.
  */
 
 export const DISTORTION_SERIES = [
+  // Keys match the parsed REW distortion point fields.
   { key: "thd", label: "THD", color: "#d55e00", width: 2.6 },
   { key: "h1", label: "H1", color: "#111827", width: 1.3, visible: false },
   { key: "noise", label: "Noise", color: "#6b7280", width: 1.5 },
@@ -138,6 +142,7 @@ export function getDistortionRange({ measurements, minFreq, maxFreq, axisMode, a
 }
 
 export function buildDistortionChartSeries({ measurements, minFreq, maxFreq, axisMode, getSeriesSetting, getGroupStyle }) {
+  // Converts enabled measurements into drawable chart series for THD, harmonics, and noise.
   const chartSeries = [];
 
   for (const measurement of measurements) {

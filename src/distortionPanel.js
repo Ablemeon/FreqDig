@@ -2,11 +2,15 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Sidebar UI builder for distortion mode.
+ * It receives callbacks from app.js instead of importing global app state.
  */
 
 import { DISTORTION_SERIES, distortionValue, formatPercentValue } from "./distortion.js";
 
 export function renderDistortionCurveControls({
+  // Main entry: builds band controls, axis mode controls, measurement tabs, and series rows.
   curveList,
   state,
   lockedFrequencyBands,

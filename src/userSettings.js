@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Small cookie-backed user settings store.
+ * Project/session data is serialized in app.js, not here.
  */
 
 const USER_SETTINGS_COOKIE = "freqdig_user_settings";
@@ -23,6 +26,7 @@ export function clampProbability(value, fallback) {
 }
 
 export function loadUserSettings() {
+  // Defensive normalization keeps old cookies from breaking newer UI options.
   const raw = getCookie(USER_SETTINGS_COOKIE);
   if (!raw) return { ...DEFAULT_USER_SETTINGS };
 

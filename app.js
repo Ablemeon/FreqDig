@@ -2,6 +2,12 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * App orchestration map:
+ * - Import/parsing and persistent state live near the top.
+ * - drawChart() dispatches every visual mode.
+ * - renderCurveList(), renderMetrics(), and renderTitle() keep panels in sync.
+ * - Event listeners at the end wire toolbar, drag/drop, zoom, and pointer input.
  */
 
 import {
@@ -19,6 +25,7 @@ import { getGroupDelaySummaryItems, makeGroupDelaySeries } from "./src/groupDela
 import { buildImpulseDisplayData, getImpulseSummaryItems, parseRewImpulseResponse } from "./src/impulseAnalysis.js";
 import { buildWaterfallData, getWaterfallSummaryItems } from "./src/waterfall.js";
 import { Waterfall3DRenderer, getEffectiveWaterfallTimeMs, getWaterfallDbRangeLimit, getWaterfallRenderSettings, projectWaterfallPoint, waterfallDbFromLevelRatio, waterfallLevelRatio, waterfallPositionFromRatios, waterfallTimeRatio } from "./src/waterfall3d.js";
+import { FrequencyWebGLRenderer } from "./src/frequencyWebgl.js";
 import { cleanupCatAvatarEasterEgg, setupCatAvatarEasterEgg } from "./src/easterEgg.js";
 import {
   DISTORTION_SERIES,
@@ -100,6 +107,7 @@ const darkModeColors = [
 ];
 
 function makeDefaultWaterfallView() {
+  // Default 3D waterfall camera and renderer settings used by reset/project load.
   return {
     yaw: -20,
     pitch: 0,
@@ -116,6 +124,7 @@ function makeDefaultWaterfallView() {
 }
 
 function makeDefaultImpulseView() {
+  // IR chart window defaults; sidebar controls write back into this shape.
   return {
     beforeMs: 5,
     afterMs: 120,
@@ -284,6 +293,7 @@ let easterEggEnabled = true;
 let metricAnimationController = null;
 let themeController = null;
 let waterfallRenderer = null;
+let frequencyRenderer = null;
 let waterfallDragState = null;
 
 // --- Chart constants ---
@@ -511,12 +521,14 @@ function cropToDefaultFrequencyRange(data) {
 }
 
 function getWaterfallCacheKey() {
+  // The waterfall cache depends on both algorithm and generated frame count.
   const mode = state.waterfallView.renderMode === "rew" ? "rew" : "relative";
   const frameCount = clamp(Math.round(Number(state.waterfallView.sliceCount) || 101), 20, 501);
   return `${mode}|${frameCount}`;
 }
 
 function getWaterfallForImpulse(impulse) {
+  // Lazily rebuild the expensive STFT waterfall data when relevant view settings change.
   const cacheKey = getWaterfallCacheKey();
   if (!impulse.waterfallCache || impulse.waterfallCacheKey !== cacheKey) {
     const [mode, frameCount] = cacheKey.split("|");
@@ -854,6 +866,7 @@ function getVisibleSeries() {
 
 // --- Canvas chart rendering ---
 function drawChart() {
+  // Main render dispatcher: keep mode-specific charts isolated behind this branch.
   canvasWrap.classList.toggle("is-waterfall-mode", !state.distortionMode && state.analysisMode === "waterfall");
   if (state.analysisMode !== "waterfall") waterfallRenderer?.clear();
 
@@ -924,8 +937,10 @@ function drawChart() {
 
   drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb, minFreq, maxFreq, minPhase, maxPhase, hasPhaseSeries });
   drawWatermark();
-  drawSeries(series, x, y, minFreq, maxFreq);
-  drawPhaseSeries(series, x, phaseY, minFreq, maxFreq);
+  if (!drawFrequencySeriesWebGL(series, x, y, phaseY, minFreq, maxFreq, width, height, dpr)) {
+    drawSeries(series, x, y, minFreq, maxFreq);
+    drawPhaseSeries(series, x, phaseY, minFreq, maxFreq);
+  }
   drawMeasurementLabel();
   if (hoverPoint) drawHoverGuide(hoverPoint);
   drawLegend(series, pad.left + 10, pad.top + 26);
@@ -1251,6 +1266,7 @@ function drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX, maxX, mi
 }
 
 function drawWaterfallChart() {
+  // WebGL2 owns the 3D surface; the 2D canvas only draws labels and hover guides.
   const { width, height } = prepareCanvas();
   const impulse = state.impulseResponses.find((item) => item.visible !== false);
   canvasWrap.classList.toggle("has-chart", Boolean(impulse));
@@ -1655,6 +1671,7 @@ function scheduleLightweightDraw() {
 }
 
 function drawCurrentChartView() {
+  // Lightweight redraw path for hover/legend changes; avoids recomputing data ranges.
   if (chartView?.isWaterfall && redrawWaterfallOverlayOnly()) {
     return;
   }
@@ -1678,8 +1695,11 @@ function drawCurrentChartView() {
   ctx.clearRect(0, 0, width, height);
   drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb, minFreq, maxFreq, minPhase, maxPhase, hasPhaseSeries });
   drawWatermark();
-  drawSeries(series, x, y, minFreq, maxFreq);
-  drawPhaseSeries(series, x, phaseY, minFreq, maxFreq);
+  const dpr = canvas.width / Math.max(1, width);
+  if (!drawFrequencySeriesWebGL(series, x, y, phaseY, minFreq, maxFreq, width, height, dpr)) {
+    drawSeries(series, x, y, minFreq, maxFreq);
+    drawPhaseSeries(series, x, phaseY, minFreq, maxFreq);
+  }
   drawMeasurementLabel();
   if (hoverPoint) drawHoverGuide(hoverPoint);
   drawLegend(series, pad.left + 10, pad.top + 26);
@@ -2143,6 +2163,74 @@ function drawPhaseSeries(series, x, phaseY, minFreq, maxFreq) {
       ctx.stroke();
       ctx.restore();
     }
+  }
+}
+
+function drawFrequencySeriesWebGL(series, x, y, phaseY, minFreq, maxFreq, width, height, dpr) {
+  // GPU path for dense frequency/phase curves. Canvas remains responsible for axes/text.
+  try {
+    frequencyRenderer ||= new FrequencyWebGLRenderer();
+    if (!frequencyRenderer.gl || !chartView) return false;
+    const dimStrength = getDimStrength();
+    const lines = [];
+
+    for (const curve of series) {
+      const curveColor = displayCurveColor(curve.color);
+      const hoverStrength = getHoverStrength(curve, "level");
+      const drawData = getDrawablePoints(curve.data, x, y, minFreq, maxFreq);
+      lines.push({
+        color: curveColor,
+        alpha: lerp(1, hoverStrength > 0 ? 1 : 0.12, dimStrength),
+        width: lerp(2, 5, hoverStrength),
+        points: drawData.map((point) => ({ x: x(point.frequency), y: y(point.level) }))
+      });
+
+      for (const phaseLine of curve.phaseSeries || []) {
+        const phaseHoverStrength = getHoverStrength(curve, phaseLine.id);
+        const phaseData = getDrawablePoints(phaseLine.data, x, phaseY, minFreq, maxFreq, "phase");
+        let currentSegment = [];
+        let previousPhase = null;
+        for (const point of phaseData) {
+          if (previousPhase !== null && Math.abs(point.phase - previousPhase) > 180) {
+            if (currentSegment.length > 1) {
+              lines.push({
+                color: curveColor,
+                alpha: lerp(0.78, phaseHoverStrength > 0 ? 1 : 0.1, dimStrength),
+                width: lerp(1.8, 4.6, phaseHoverStrength),
+                dash: phaseLine.dash,
+                points: currentSegment
+              });
+            }
+            currentSegment = [];
+          }
+          currentSegment.push({ x: x(point.frequency), y: phaseY(point.phase) });
+          previousPhase = point.phase;
+        }
+        if (currentSegment.length > 1) {
+          lines.push({
+            color: curveColor,
+            alpha: lerp(0.78, phaseHoverStrength > 0 ? 1 : 0.1, dimStrength),
+            width: lerp(1.8, 4.6, phaseHoverStrength),
+            dash: phaseLine.dash,
+            points: currentSegment
+          });
+        }
+      }
+    }
+
+    const renderedCanvas = frequencyRenderer.render({
+      width,
+      height,
+      dpr,
+      clip: { left: chartView.pad.left, top: chartView.pad.top, width: chartView.plotW, height: chartView.plotH },
+      lines
+    });
+    if (!renderedCanvas) return false;
+    ctx.drawImage(renderedCanvas, 0, 0, width, height);
+    return true;
+  } catch (error) {
+    console.warn("Frequency WebGL render failed:", error);
+    return false;
   }
 }
 
@@ -3424,6 +3512,7 @@ async function loadProjectFile(file) {
 
 // --- Sidebar and summary rendering ---
 function renderCurveList() {
+  // Sidebar router. Each analysis mode owns its own control panel here.
   curveList.innerHTML = "";
   if (state.distortionMode) {
     renderDistortionCurveControls();
@@ -3852,6 +3941,7 @@ function renderGroupDelayControls() {
 }
 
 function renderWaterfallControls() {
+  // Waterfall-only controls; changes here can invalidate cached STFT data.
   const visibleImpulse = state.impulseResponses.find((item) => item.visible !== false);
   const waterfall = visibleImpulse ? getWaterfallForImpulse(visibleImpulse) : null;
   const dbRangeLimit = waterfall ? getWaterfallDbRangeLimit(waterfall) : 90;
@@ -4174,6 +4264,7 @@ function setMetricItems(title, items) {
 }
 
 function renderMetrics() {
+  // Bottom analysis cards share one DOM layout; mode-specific data is assembled here.
   const { minFreq, maxFreq } = getFrequencyRange();
   const groupDelaySeries = state.analysisMode === "groupDelay"
     ? makeGroupDelaySeries(state.curves, { getData: (curve) => displayData(curve, { applyTilt: false, applyOffset: false }) })
@@ -4571,6 +4662,7 @@ document.getElementById("exportSvg").addEventListener("click", () => {
 // Export routes intentionally redraw the visible canvas, so PNG exports match current zoom,
 // active overlays, curve visibility, and high-DPI backing resolution.
 function exportPng(options = {}) {
+  // Toggle transparentExportMode only while building the export frame.
   const transparent = options.transparent === true;
   const previousTransparentMode = transparentExportMode;
 
@@ -4589,6 +4681,7 @@ function exportPng(options = {}) {
 }
 
 function getExportPngDataUrl(transparent) {
+  // Waterfall has a separate WebGL canvas, so it uses a temporary composite canvas.
   const exportCanvas = chartView?.isWaterfall
     ? getWaterfallCompositeCanvas({ transparent })
     : canvas;

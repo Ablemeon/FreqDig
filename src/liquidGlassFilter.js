@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Installs one SVG filter definition used by dark-mode glass surfaces.
+ * CSS references the generated filter id; chart code does not call this directly.
  * Reference：
  * // Vanilla JS Liquid Glass Effect - Paste into browser console
 *  // Created by Shu Ding (https://github.com/shuding/liquid-glass) in 2025.
@@ -13,6 +16,7 @@ const MAP_SIZE = 192;
 const EDGE_REFRACTION_SCALE = 58;
 
 export function installLiquidGlassFilter() {
+  // Idempotent setup so app.js can call it once during startup.
   if (document.getElementById(FILTER_ID)) return;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

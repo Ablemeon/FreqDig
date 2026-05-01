@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * Synthetic frequency-response data used only by the demo button.
+ * Real imports still go through app.js -> audioMath.parseCsv().
  */
 
 export function getDemoCurves() {

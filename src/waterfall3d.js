@@ -2,6 +2,9 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * WebGL2 renderer for the interactive 3D waterfall chart.
+ * Data comes from src/waterfall.js; this file only projects and draws it.
  */
 
 const SURFACE_VERTEX_SHADER = `#version 300 es
@@ -85,6 +88,7 @@ const WEBGL_OPTIONS = {
 };
 
 export class Waterfall3DRenderer {
+  // Runtime renderer owned by app.js. It draws surface slices, ridges, and 3D axes.
   constructor(canvas) {
     this.canvas = canvas;
     this.gl = canvas.getContext("webgl2", WEBGL_OPTIONS);
@@ -135,6 +139,7 @@ export class Waterfall3DRenderer {
   }
 
   render(waterfall, options = {}) {
+    // Public entry point: resize, refresh cached geometry if needed, then draw a frame.
     if (!this.gl || this.gl.isContextLost?.() || !waterfall?.frames?.length) return false;
     this.resize();
 
@@ -222,6 +227,7 @@ export class Waterfall3DRenderer {
   }
 
   uploadSurface(waterfall, settings) {
+    // Builds either independent time slices or a connected grid surface.
     const gl = this.gl;
     const frames = getRenderableFrames(waterfall, settings);
     const frequencies = waterfall.frequencies || [];
@@ -297,6 +303,7 @@ export class Waterfall3DRenderer {
   }
 
   uploadRidges(waterfall, settings) {
+    // Ridges are the REW-like contour lines drawn along each time slice.
     const gl = this.gl;
     const frames = getRenderableFrames(waterfall, settings);
     const frequencies = waterfall.frequencies || [];
@@ -495,6 +502,7 @@ function compileShader(gl, type, source) {
 }
 
 export function waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, settings = {}) {
+  // Shared by WebGL and the 2D overlay so tooltips align with the 3D world.
   const timeScale = settings.timeScale ?? 1;
   const xScale = settings.xScale ?? 1;
   return {

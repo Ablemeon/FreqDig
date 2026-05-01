@@ -2,9 +2,13 @@
  * FreqDig
  * Copyright (c) 2026 Diggercat
  * SPDX-License-Identifier: MIT
+ *
+ * REW impulse-response parser and lightweight IR chart data builder.
+ * Waterfall analysis also starts from the parsed impulse object returned here.
  */
 
 export function parseRewImpulseResponse(text) {
+  // REW IR exports store metadata above "* Data start" and one sample per line below it.
   const lines = text.trim().split(/\r?\n/).map((line) => line.trim());
   const dataStartIndex = lines.findIndex((line) => /^\*\s*Data start/i.test(line));
   if (dataStartIndex < 0 || !/Impulse Response data saved by REW/i.test(text.slice(0, 300))) return null;
@@ -45,6 +49,7 @@ export function parseRewImpulseResponse(text) {
 }
 
 export function buildImpulseDisplayData(impulse, options = {}) {
+  // Downsamples the local window around the impulse peak for the 2D IR chart.
   const beforeMs = Number.isFinite(options.beforeMs) ? options.beforeMs : 5;
   const afterMs = Number.isFinite(options.afterMs) ? options.afterMs : 120;
   const maxPoints = Number.isFinite(options.maxPoints) ? options.maxPoints : 2400;
@@ -90,6 +95,7 @@ export function getImpulseSummaryItems(impulses) {
 }
 
 function readRewMetadataNumber(lines, label) {
+  // Metadata lines are shaped like: value // Label.
   const matcher = new RegExp(`^([^/]+)//\\s*${label}`, "i");
   const line = lines.find((item) => matcher.test(item));
   if (!line) return null;
