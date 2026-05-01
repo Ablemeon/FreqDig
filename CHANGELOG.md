@@ -2,8 +2,7 @@
 
 All notable changes to this project are documented here.
 
-The format loosely follows Keep a Changelog. Versions should be moved from
-`Unreleased` into a dated release section when a release is prepared.
+The format loosely follows Keep a Changelog. Versions should be moved from `Unreleased` into a dated release section when a release is prepared.
 
 [中文](./CHANGELOG.zh-CN.md) | English
 
@@ -13,35 +12,38 @@ The format loosely follows Keep a Changelog. Versions should be moved from
 
 - Added REW THD text import support.
 - Added distortion mode for THD, Noise, and harmonic distortion curves.
-- Added grouped distortion measurements with rename, remove, and per-series visibility controls.
-- Added multi-group distortion comparison when more than one distortion group is enabled.
-- Added distortion analysis ranges:
-  - Full range 20 Hz - 20 kHz
-  - Trusted range 100 Hz - 2 kHz
-  - Trusted wide range 100 Hz - 10 kHz
-  - Ultra-low range 20 Hz - 60 Hz
-  - Low range 60 Hz - 300 Hz
-  - Ultra-high range 10 kHz - 20 kHz
-- Added distortion analysis export for PNG and SVG outputs.
-- Added a curve/distortion dual-state mode switch.
-- Added a three-column layout for distortion mode.
+- Added grouped distortion measurements with rename, remove, visibility, and per-series controls.
+- Added distortion analysis ranges and distortion analysis export.
+- Added REW Impulse Response import for IR analysis and waterfall analysis.
+- Added group delay analysis from phase slope.
+- Added a WebGL2 3D waterfall renderer with slice/grid rendering modes.
+- Added waterfall controls for slice count, dynamic range, time depth, zoom, rotation, pan, frequency width, and render algorithm.
+- Added waterfall analysis summary cards linked to current waterfall settings.
+- Added WebGL2 acceleration for dense frequency-response and phase curve rendering.
+- Added module-level comments to the main JavaScript files to make feature locations easier to find.
 
 ### Changed
 
-- Distortion mode now reuses chart tooltip, hover highlight, legend highlight, zoom, and frequency-band controls.
-- Distortion axis modes were simplified to percent and dBr.
-- Percent mode now uses a fixed 100% upper bound.
-- dBr mode now uses a fixed 0 dBr upper bound.
-- The right-side y-axis now shows the complementary distortion unit.
-- New distortion imports hide H1 by default.
-- Distortion mode header controls were simplified to reduce accidental frequency-response operations.
-- Dark mode styling for distortion controls was refined.
+- Frequency-response curve rendering now uses a hybrid path: WebGL2 for dense curve strokes, Canvas2D for axes, text, tooltips, legend, and export composition.
+- Octave smoothing now uses log-frequency weighted smoothing to reduce narrow-window jagged artifacts.
+- Relative waterfall data now keeps decay down to `-80 dB`, with a wider default dynamic range.
+- Waterfall slice count can generate up to `501` frames when performance allows.
+- The default waterfall camera is now yaw `-20°` and pitch `0°`.
+- Dark mode and header layering were refined across chart modes.
+
+### Fixed
+
+- Fixed waterfall PNG/SVG export composition paths.
+- Fixed dark-mode visibility issues for 2D charts.
+- Fixed several waterfall rendering artifacts by replacing the earlier continuous surface with a WebGL2 slice/grid renderer.
+- Fixed octave smoothing artifacts that could make smoothed curves look more jagged than raw curves.
 
 ### Refactored
 
 - Moved distortion calculation and formatting logic into `src/distortion.js`.
 - Moved distortion sidebar controls into `src/distortionPanel.js`.
 - Moved theme and dark-mode transition control into `src/themeController.js`.
+- Added `src/waterfall.js`, `src/waterfall3d.js`, `src/impulseAnalysis.js`, `src/groupDelay.js`, and `src/frequencyWebgl.js` for analysis and rendering modules.
 
 ### Removed
 

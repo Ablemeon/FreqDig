@@ -1,95 +1,66 @@
-
 # FreqDig
 
 [中文](#中文) | [English](#english)
 
-FreqDig is a local frequency-response analysis tool for importing, comparing, visualizing, and exporting audio measurement curves.
+FreqDig is a local audio measurement analysis tool for frequency response, distortion, impulse response, group delay, and waterfall visualization.
 
 Current version: `0.0.1`
 
 Changelog: [English](./CHANGELOG.md) | [中文](./CHANGELOG.zh-CN.md)
 
 <a id="中文"></a>
-<details open>
-<summary><strong>中文说明</strong></summary>
+## 中文
 
-## 简介
+### 简介
 
-FreqDig 是一个本地运行的轻量级频响曲线分析工具，用于导入、查看、比较和导出音频测量曲线。它适合耳机、扬声器、测量麦克风、目标曲线和多组频响数据的快速对比分析。
+FreqDig 是一个本地运行的音频测量分析工具，用于导入、查看、比较和导出测量曲线。它适合耳机、扬声器、测量麦克风、目标曲线、REW 导出数据等快速分析场景。
 
-项目使用原生 HTML/CSS/JavaScript 实现，不依赖前端框架。页面通过本地 Node.js 静态服务器运行，避免直接打开 HTML 时遇到浏览器模块加载限制。
-<img width="2549" height="1403" alt="ScreenShot" src="https://github.com/user-attachments/assets/b25e6e9f-1b32-4c6c-a4f8-60211de8ca88" />
+项目使用原生 HTML/CSS/JavaScript 实现，不依赖前端框架。建议通过本地 Node.js 静态服务器运行，避免直接打开 HTML 时遇到浏览器模块加载限制。
 
-任何二次开发的行为都是被欢迎的，包括但不限于：
+### 主要功能
 
-- 新增功能
-- 修复 bug
-- 优化性能
-- 新增文档
-也欢迎任意形式的引用，但请一定要尊重开源，如果以商业用途使用，务必保留版权声明。
-请在提交 PR 时添加详细的描述和测试用例。
+- 导入 CSV/TXT/FRD/DAT 频响文本数据，支持 `frequency level` 和可选相位列。
+- 频响模式支持原始曲线、参考差异、目标差异、斜率、偏移、归一化、对齐和频段指示。
+- 频响曲线层使用 WebGL2 优先渲染，大量曲线和高采样点时更流畅；坐标、文字、tooltip 和导出仍使用稳定的 Canvas/SVG 流程。
+- 支持倍频程平滑，并使用对数频率加权平滑以减少窄窗口锯齿。
+- 支持 REW THD 文本导入，提供 THD、Noise、H1-H9、百分比/dBr 纵轴和多组失真对比。
+- 支持 REW Impulse Response 文本导入，用于 IR 分析和三维瀑布图。
+- 支持群延迟分析，由相位斜率计算，可多曲线对比。
+- 三维瀑布图使用 WebGL2，支持切片绘制/网格曲面切换、切片数量、动态范围、时间深度、缩放、旋转和平移。
+- 支持亮色/暗色主题、独立夜间模式背景、持久化用户设置。
+- 支持 PNG、透明 PNG、SVG 导出，可附加分析摘要。
 
-## 功能
+### 数据格式
 
-- 导入 CSV/TXT/FRD/DAT 文本测量数据
-- 支持原始曲线、相对基准差异、相对目标偏差视图
-- 支持目标曲线导入与可见性控制
-- 支持曲线平滑、偏移、归一化和对齐
-- 支持相位、最小相位和相位裕量显示
-- 支持频带指示器和五段式偏差摘要
-- 支持水印、测量器型号和隐藏设置持久化
-- 支持 PNG、透明 PNG 和 SVG 导出
-- 支持导出图表时附加偏差概要
-- 支持导入 REW 导出的 THD 文本文件
-- 支持失真模式，可查看 THD、Noise 与各阶谐波失真曲线
-- 支持多组失真数据分组、重命名、移除和组间对比
-- 支持失真分析计算范围、百分比/dBr 纵轴切换和导出失真分析
-
-## 数据格式
-
-支持文本数据行：
+频响文本行：
 
 ```text
 frequency level
 frequency level phase
 ```
 
-也支持常见表头，例如：
+常见表头也支持，例如：
 
 ```text
 frequency, level_db, phase
 ```
 
-暂不直接解析 REW `.mdat` 二进制文件。请先在 REW 中导出为文本格式后再导入。
+REW `.mdat` 二进制文件暂不直接解析。请先在 REW 中导出为文本格式后再导入。
 
-REW 导出的 THD 文本文件会自动进入失真模式。失真模式支持 THD、Noise、H1-H9 曲线显示控制、组间对比、计算范围选择和失真分析导出。
+REW THD 文本会自动进入失真模式。REW Impulse Response 文本会进入 IR/瀑布图分析流程。
 
-## 运行环境
+### 启动
 
-需要安装 Node.js，建议使用当前 LTS 版本。
-
-检查 Node.js：
+需要先安装 Node.js，建议使用当前 LTS 版本。
 
 ```bash
 node -v
 ```
 
-如果没有安装，可以从 https://nodejs.org/ 下载。
+启动本地服务：
 
-Windows 也可以使用：
-
-```powershell
-winget install -e --id OpenJS.NodeJS.LTS
-```
-
-## 启动服务
-
-### Windows：双击启动
-
-在项目根目录双击：
-
-```text
-start.cmd
+```bash
+npm start
 ```
 
 默认访问：
@@ -98,117 +69,47 @@ start.cmd
 http://127.0.0.1:8000/index.html
 ```
 
-### Windows：PowerShell
-
-```powershell
-.\start.ps1
-```
-
-指定端口：
-
-```powershell
-.\start.ps1 -Port 8123
-```
-
-### macOS / Linux：Shell
-
-首次使用时给脚本执行权限：
-
-```bash
-chmod +x ./start.sh
-```
-
-启动：
-
-```bash
-./start.sh
-```
-
-指定端口：
-
-```bash
-./start.sh 8123
-```
-
-### 通用：npm
-
-```bash
-npm start
-```
-
 也可以直接运行：
 
 ```bash
 node scripts/static-server.mjs 8000 --open
 ```
 
-## 关闭服务
-
-在运行服务的终端窗口中按：
-
-```text
-Ctrl+C
-```
-
-Windows 如果出现“是否终止批处理操作”的提示，输入 `Y` 后回车。
-
-## 端口被占用
-
-如果默认 `8000` 端口已被占用，换一个端口启动。
-
-Windows：
+Windows 也可以双击项目根目录下的 `start.cmd`，或使用：
 
 ```powershell
-.\start.ps1 -Port 8123
+.\start.ps1
 ```
 
-macOS / Linux：
-
-```bash
-./start.sh 8123
-```
-
-访问地址也要改为对应端口：
-
-```text
-http://127.0.0.1:8123/index.html
-```
-
-## 许可
+### 许可证
 
 本项目使用 MIT 协议发布。使用、修改和分发时请保留版权声明。
 
-</details>
-
 <a id="english"></a>
-<details>
-<summary><strong>English</strong></summary>
+## English
 
-## Overview
+### Overview
 
-FreqDig is a lightweight local frequency-response analysis tool for importing, viewing, comparing, and exporting audio measurement curves. It is useful for quick comparison work involving headphones, speakers, measurement microphones, target curves, and multiple frequency-response datasets.
+FreqDig is a local audio measurement analysis tool for importing, viewing, comparing, and exporting measurement curves. It is useful for headphones, speakers, measurement microphones, target curves, and REW-exported text data.
 
-The project is built with native HTML/CSS/JavaScript and does not depend on a frontend framework. It runs through a local Node.js static server to avoid browser restrictions that can occur when opening HTML files directly.
+The project is built with native HTML/CSS/JavaScript and does not depend on a frontend framework. Run it through the local Node.js static server to avoid browser module restrictions that can occur when opening HTML directly.
 
-## Features
+### Features
 
-- Import CSV/TXT/FRD/DAT text measurement data
-- View raw curves, reference-relative differences, and target-relative deviations
-- Import target curves and toggle target visibility
-- Apply smoothing, offset, normalization, and curve alignment
-- Display phase, minimum phase, and phase margin traces
-- Show frequency-band indicators and five-band deviation summaries
-- Configure watermark text, measurement model text, and hidden settings with persistence
-- Export PNG, transparent PNG, and SVG charts
-- Optionally append a deviation summary to exported charts
-- Import REW THD text files
-- Use distortion mode to inspect THD, Noise, and harmonic distortion curves
-- Manage grouped distortion measurements with rename, remove, visibility, and comparison controls
-- Select distortion analysis ranges, switch percent/dBr axes, and append distortion analysis to exports
+- Import CSV/TXT/FRD/DAT frequency-response text data with `frequency level` rows and optional phase columns.
+- Frequency-response mode supports raw curves, reference-relative differences, target-relative deviations, tilt, offsets, normalization, alignment, and band indicators.
+- Frequency-response curve rendering uses WebGL2 when available for better performance with dense data and many curves; axes, text, tooltips, and exports remain on the stable Canvas/SVG path.
+- Octave smoothing uses log-frequency weighted smoothing to reduce narrow-window jagged artifacts.
+- Import REW THD text files with THD, Noise, H1-H9, percent/dBr axes, and grouped distortion comparison.
+- Import REW Impulse Response text files for IR analysis and 3D waterfall analysis.
+- Group delay analysis is calculated from phase slope and supports multiple comparison curves.
+- The 3D waterfall view uses WebGL2 and supports slice/grid rendering, slice count, dynamic range, time depth, zoom, rotation, and pan.
+- Light/dark themes, standalone night-mode scene, and persisted user settings.
+- Export PNG, transparent PNG, and SVG charts with optional analysis summaries.
 
-## Data Format
+### Data Format
 
-Supported text rows:
+Supported frequency-response rows:
 
 ```text
 frequency level
@@ -223,34 +124,20 @@ frequency, level_db, phase
 
 REW `.mdat` binary files are not parsed directly. Export measurements from REW as text files before importing them into FreqDig.
 
-REW THD text exports are detected automatically and opened in distortion mode. Distortion mode supports THD, Noise, H1-H9 visibility controls, grouped comparison, analysis range selection, and distortion analysis export.
+REW THD text exports open in distortion mode automatically. REW Impulse Response text exports feed the IR and waterfall analysis modes.
 
-## Requirements
+### Start
 
 Install Node.js first. The current LTS version is recommended.
-
-Check Node.js:
 
 ```bash
 node -v
 ```
 
-If Node.js is not installed, download it from https://nodejs.org/.
+Start the local server:
 
-On Windows, you can also install it with:
-
-```powershell
-winget install -e --id OpenJS.NodeJS.LTS
-```
-
-## Start The Server
-
-### Windows: Double Click
-
-Double-click this file in the project root:
-
-```text
-start.cmd
+```bash
+npm start
 ```
 
 Default URL:
@@ -259,84 +146,18 @@ Default URL:
 http://127.0.0.1:8000/index.html
 ```
 
-### Windows: PowerShell
-
-```powershell
-.\start.ps1
-```
-
-Use a custom port:
-
-```powershell
-.\start.ps1 -Port 8123
-```
-
-### macOS / Linux: Shell
-
-Grant execute permission the first time:
-
-```bash
-chmod +x ./start.sh
-```
-
-Start:
-
-```bash
-./start.sh
-```
-
-Use a custom port:
-
-```bash
-./start.sh 8123
-```
-
-### Cross Platform: npm
-
-```bash
-npm start
-```
-
-You can also run the Node.js server directly:
+You can also run the server directly:
 
 ```bash
 node scripts/static-server.mjs 8000 --open
 ```
 
-## Stop The Server
-
-Press this in the terminal window running the server:
-
-```text
-Ctrl+C
-```
-
-On Windows, if the terminal asks whether to terminate the batch job, type `Y` and press Enter.
-
-## Port Already In Use
-
-If port `8000` is already in use, start the server with another port.
-
-Windows:
+On Windows, you can also double-click `start.cmd` in the project root or run:
 
 ```powershell
-.\start.ps1 -Port 8123
+.\start.ps1
 ```
 
-macOS / Linux:
-
-```bash
-./start.sh 8123
-```
-
-Then open the matching URL:
-
-```text
-http://127.0.0.1:8123/index.html
-```
-
-## License
+### License
 
 This project is released under the MIT License. Keep the copyright notice when using, modifying, or distributing it.
-
-</details>
