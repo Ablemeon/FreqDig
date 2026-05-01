@@ -12,7 +12,8 @@ export function createThemeController({
   saveUserSettings,
   cssColorCache,
   renderCurveList,
-  drawChart
+  drawChart,
+  prepareThemeScene
 }) {
   let themeTransitionTimer = null;
 
@@ -38,7 +39,9 @@ export function createThemeController({
   function toggleTheme() {
     const nextTheme = state.theme === "dark" ? "light" : "dark";
     if (nextTheme === "dark") {
-      playDarkThemeTransition(() => setTheme("dark"));
+      Promise.resolve(prepareThemeScene?.())
+        .catch((error) => console.warn(error))
+        .finally(() => playDarkThemeTransition(() => setTheme("dark")));
       return;
     }
     setTheme("light");

@@ -15,6 +15,10 @@ import {
   smoothData,
   wrapPhaseDegrees
 } from "./src/audioMath.js";
+import { getGroupDelaySummaryItems, makeGroupDelaySeries } from "./src/groupDelay.js";
+import { buildImpulseDisplayData, getImpulseSummaryItems, parseRewImpulseResponse } from "./src/impulseAnalysis.js";
+import { buildWaterfallData, getWaterfallSummaryItems } from "./src/waterfall.js";
+import { Waterfall3DRenderer, getEffectiveWaterfallTimeMs, getWaterfallDbRangeLimit, getWaterfallRenderSettings, projectWaterfallPoint, waterfallDbFromLevelRatio, waterfallLevelRatio, waterfallPositionFromRatios, waterfallTimeRatio } from "./src/waterfall3d.js";
 import { cleanupCatAvatarEasterEgg, setupCatAvatarEasterEgg } from "./src/easterEgg.js";
 import {
   DISTORTION_SERIES,
@@ -48,11 +52,13 @@ import {
 } from "./src/chartExport.js";
 import { installLiquidGlassFilter } from "./src/liquidGlassFilter.js";
 import { MetricAnimationController } from "./src/metricAnimation.js";
+import { installNightModeScene } from "./src/nightMode.js";
 import { createThemeController } from "./src/themeController.js";
 import { DEFAULT_USER_SETTINGS, clampProbability, loadUserSettings, normalizeTheme, saveUserSettings } from "./src/userSettings.js";
 import { getDemoCurves, getDemoTarget } from "./examples/demoData.js";
 
 installLiquidGlassFilter();
+const nightModeSceneReady = installNightModeScene();
 
 // --- Theme and app state ---
 // Default palette used when new curves are imported.
@@ -93,6 +99,58 @@ const darkModeColors = [
   "#f19cff"
 ];
 
+function makeDefaultWaterfallView() {
+  return {
+    yaw: -20,
+    pitch: 0,
+    dbRange: 70,
+    renderMode: "relative",
+    surfaceMode: "slice",
+    sliceCount: 101,
+    timeScale: 1,
+    zoom: 1,
+    xScale: 1,
+    panX: 0,
+    panY: 0
+  };
+}
+
+function makeDefaultImpulseView() {
+  return {
+    beforeMs: 5,
+    afterMs: 120,
+    normalize: false
+  };
+}
+
+function normalizeImpulseView(view = {}) {
+  const defaults = makeDefaultImpulseView();
+  const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  return {
+    beforeMs: clamp(finiteOr(view.beforeMs, defaults.beforeMs), 1, 50),
+    afterMs: clamp(finiteOr(view.afterMs, defaults.afterMs), 20, 500),
+    normalize: Boolean(view.normalize)
+  };
+}
+
+function normalizeWaterfallView(view = {}) {
+  const defaults = makeDefaultWaterfallView();
+  const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  return {
+    yaw: clamp(finiteOr(view.yaw, defaults.yaw), -180, 180),
+    pitch: clamp(finiteOr(view.pitch, defaults.pitch), 0, 89),
+    dbRange: clamp(Math.round(finiteOr(view.dbRange, defaults.dbRange)), 18, 110),
+    renderMode: view.renderMode === "rew" ? "rew" : "relative",
+    surfaceMode: view.surfaceMode === "grid" ? "grid" : "slice",
+    sliceCount: clamp(Math.round(finiteOr(view.sliceCount, defaults.sliceCount)), 20, 501),
+    timeScale: clamp(finiteOr(view.timeScale, defaults.timeScale), 0.55, 1.7),
+    zoom: clamp(finiteOr(view.zoom, defaults.zoom), 0.65, 2.2),
+    xScale: clamp(finiteOr(view.xScale, defaults.xScale), 0.45, 2.8),
+    panX: clamp(finiteOr(view.panX, defaults.panX), -1.6, 1.6),
+    panY: clamp(finiteOr(view.panY, defaults.panY), -1.1, 1.1)
+  };
+}
+
 // Single source of truth for user-visible settings and loaded measurement data.
 // Curve objects keep their own cached derived data to avoid recalculating on every redraw.
 const state = {
@@ -124,12 +182,19 @@ const state = {
   distortionAxisMin: null,
   distortionAxisMax: null,
   distortionAxisMode: "dbr",
-  distortionAnalysisRange: "full"
+  distortionAnalysisRange: "full",
+  analysisMode: "frequency",
+  impulseResponses: [],
+  impulseView: makeDefaultImpulseView(),
+  waterfallView: makeDefaultWaterfallView()
 };
 
 // --- DOM references ---
 const canvas = document.getElementById("chart");
 const ctx = canvas.getContext("2d");
+const waterfallCanvas = document.createElement("canvas");
+waterfallCanvas.id = "waterfall3d";
+waterfallCanvas.className = "waterfall-3d-canvas";
 const curveFiles = document.getElementById("curveFiles");
 const curveFilesButton = curveFiles.closest(".file-button");
 const targetFile = document.getElementById("targetFile");
@@ -138,7 +203,7 @@ const projectFile = document.getElementById("projectFile");
 const curveList = document.getElementById("curveList");
 const reference = document.getElementById("reference");
 const mode = document.getElementById("mode");
-const distortionModeToggle = document.getElementById("distortionModeToggle");
+const analysisModeSwitch = document.getElementById("analysisModeSwitch");
 const distortionAnalysisRange = document.getElementById("distortionAnalysisRange");
 const emptyState = document.getElementById("emptyState");
 const chartTooltip = document.getElementById("chartTooltip");
@@ -171,6 +236,8 @@ const exportDeviationSummary = document.getElementById("exportDeviationSummary")
 const exportDeviationSummaryLabel = exportDeviationSummary?.closest("label");
 const exportDeviationSummaryText = exportDeviationSummaryLabel?.querySelector("span");
 const toolbar = document.querySelector(".toolbar");
+const toolbarMenuToggle = document.getElementById("toolbarMenuToggle");
+const toolbarMenuPanel = document.querySelector(".toolbar-menu-panel");
 const workspace = document.querySelector(".workspace");
 const xMinSlider = document.getElementById("xMinSlider");
 const xMaxSlider = document.getElementById("xMaxSlider");
@@ -179,6 +246,7 @@ const zoomControlsToggle = document.getElementById("zoomControlsToggle");
 const resetAxisView = document.getElementById("resetAxisView");
 const globalSmoothing = document.getElementById("globalSmoothing");
 const canvasWrap = canvas.parentElement;
+canvasWrap.insertBefore(waterfallCanvas, canvas);
 const bandRangeButtons = document.querySelectorAll("[data-band-range]");
 const xZoomMinLabel = document.getElementById("xZoomMinLabel");
 const xZoomMaxLabel = document.getElementById("xZoomMaxLabel");
@@ -215,6 +283,8 @@ const cssColorCache = new Map();
 let easterEggEnabled = true;
 let metricAnimationController = null;
 let themeController = null;
+let waterfallRenderer = null;
+let waterfallDragState = null;
 
 // --- Chart constants ---
 const MIN_FREQ = 20;
@@ -338,8 +408,9 @@ function syncZoomSliders() {
     } else {
       const ySpan = chartView.maxDb - chartView.minDb;
       yZoomSlider.value = String(Math.round(100 * (1 - Math.sqrt(clamp((ySpan - MIN_Y_SPAN_DB) / (MAX_Y_SPAN_DB - MIN_Y_SPAN_DB), 0, 1)))));
-      yZoomMaxLabel.textContent = `${chartView.maxDb.toFixed(0)} dB`;
-      yZoomMinLabel.textContent = `${chartView.minDb.toFixed(0)} dB`;
+      const unit = chartView.isGroupDelay ? "ms" : "dB";
+      yZoomMaxLabel.textContent = `${chartView.maxDb.toFixed(0)} ${unit}`;
+      yZoomMinLabel.textContent = `${chartView.minDb.toFixed(0)} ${unit}`;
     }
   }
 
@@ -398,15 +469,61 @@ function showImportWarnings(mdatFiles, emptyFiles) {
   }
 }
 
+function setToolbarMenuOpen(open) {
+  if (!toolbarMenuToggle || !toolbarMenuPanel) return;
+  toolbarMenuToggle.classList.toggle("is-open", open);
+  toolbarMenuPanel.classList.toggle("is-open", open);
+  toolbarMenuToggle.setAttribute("aria-expanded", String(open));
+}
+
 function makeDistortionMeasurement(name, distortion) {
   return {
     id: makeId(),
     name: distortion.name || name,
     fileName: name,
-    data: distortion.data,
+    data: cropToDefaultFrequencyRange(distortion.data),
     enabled: true,
     seriesSettings: {}
   };
+}
+
+function makeImpulseMeasurement(name, impulse) {
+  return {
+    id: makeId(),
+    name: impulse.name || name,
+    fileName: name,
+    sampleInterval: impulse.sampleInterval,
+    sampleRate: impulse.sampleRate,
+    startTime: impulse.startTime,
+    peakIndex: impulse.peakIndex,
+    responseLength: impulse.responseLength,
+    dataOffsetDb: impulse.dataOffsetDb,
+    samples: impulse.samples,
+    color: nextCurveColor(),
+    visible: true,
+    waterfallCache: null,
+    waterfallCacheKey: ""
+  };
+}
+
+function cropToDefaultFrequencyRange(data) {
+  return (data || []).filter((point) => point.frequency >= MIN_FREQ && point.frequency <= MAX_FREQ);
+}
+
+function getWaterfallCacheKey() {
+  const mode = state.waterfallView.renderMode === "rew" ? "rew" : "relative";
+  const frameCount = clamp(Math.round(Number(state.waterfallView.sliceCount) || 101), 20, 501);
+  return `${mode}|${frameCount}`;
+}
+
+function getWaterfallForImpulse(impulse) {
+  const cacheKey = getWaterfallCacheKey();
+  if (!impulse.waterfallCache || impulse.waterfallCacheKey !== cacheKey) {
+    const [mode, frameCount] = cacheKey.split("|");
+    impulse.waterfallCache = buildWaterfallData(impulse, { mode, frameCount: Number(frameCount) });
+    impulse.waterfallCacheKey = cacheKey;
+  }
+  return impulse.waterfallCache;
 }
 
 // --- Curve creation, display transforms, and import ---
@@ -419,12 +536,13 @@ function makeId() {
 }
 
 function makeCurve(name, data) {
-  const hasPhase = dataHasPhase(data);
+  const croppedData = cropToDefaultFrequencyRange(data);
+  const hasPhase = dataHasPhase(croppedData);
 
   return {
     id: makeId(),
     name,
-    data,
+    data: croppedData,
     color: nextCurveColor(),
     visible: true,
     offsetDb: 0,
@@ -602,6 +720,7 @@ function targetAlignmentData(target) {
 async function readFiles(files, isTarget = false) {
   const mdatFiles = [];
   const emptyFiles = [];
+  let importedImpulse = false;
 
   for (const file of files) {
     if (isMdatFile(file)) {
@@ -610,6 +729,16 @@ async function readFiles(files, isTarget = false) {
     }
 
     const text = await file.text();
+    const impulse = parseRewImpulseResponse(text);
+    if (impulse && !isTarget) {
+      state.impulseResponses = [makeImpulseMeasurement(file.name, impulse)];
+      state.distortionMode = false;
+      if (state.analysisMode !== "impulse" && state.analysisMode !== "waterfall") state.analysisMode = "impulse";
+      waterfallRenderer?.clear();
+      importedImpulse = true;
+      continue;
+    }
+
     const distortion = parseRewDistortion(text);
     if (distortion && !isTarget) {
       const measurement = makeDistortionMeasurement(file.name, distortion);
@@ -622,7 +751,7 @@ async function readFiles(files, isTarget = false) {
       continue;
     }
 
-    const data = parseCsv(text);
+    const data = cropToDefaultFrequencyRange(parseCsv(text));
     if (!data.length) {
       emptyFiles.push(file.name);
       continue;
@@ -645,7 +774,7 @@ async function readFiles(files, isTarget = false) {
         phaseMargin: false
       };
     } else {
-  state.curves.push(makeCurve(file.name, data));
+      state.curves.push(makeCurve(file.name, data));
     }
   }
 
@@ -656,6 +785,12 @@ async function readFiles(files, isTarget = false) {
   }
 
   render();
+  if (importedImpulse) {
+    requestAnimationFrame(() => {
+      drawChart();
+      requestAnimationFrame(drawChart);
+    });
+  }
 }
 
 function importDroppedCurveFiles(fileList) {
@@ -719,8 +854,26 @@ function getVisibleSeries() {
 
 // --- Canvas chart rendering ---
 function drawChart() {
+  canvasWrap.classList.toggle("is-waterfall-mode", !state.distortionMode && state.analysisMode === "waterfall");
+  if (state.analysisMode !== "waterfall") waterfallRenderer?.clear();
+
   if (state.distortionMode) {
     drawDistortionChart();
+    return;
+  }
+
+  if (state.analysisMode === "groupDelay") {
+    drawGroupDelayChart();
+    return;
+  }
+
+  if (state.analysisMode === "impulse") {
+    drawImpulseChart();
+    return;
+  }
+
+  if (state.analysisMode === "waterfall") {
+    drawWaterfallChart();
     return;
   }
 
@@ -929,13 +1082,428 @@ function drawDistortionChart() {
   syncZoomSliders();
 }
 
+function prepareCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = getCanvasDpr(rect);
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  return { width: rect.width, height: rect.height };
+}
+
+function drawGroupDelayChart() {
+  const { width, height } = prepareCanvas();
+  const series = makeGroupDelaySeries(state.curves, {
+    getData: (curve) => displayData(curve, { applyTilt: false, applyOffset: false })
+  });
+  canvasWrap.classList.toggle("has-chart", Boolean(series.length));
+  emptyState.textContent = "导入带相位列的 REW 频响文件后显示群延迟。";
+  emptyState.style.display = series.length ? "none" : "grid";
+  if (!series.length) {
+    chartView = null;
+    renderBandIndicatorOverlay();
+    hideTooltip();
+    return;
+  }
+
+  const { minFreq, maxFreq } = getFrequencyRange();
+  const { minDb, maxDb } = getGroupDelayRange(series, minFreq, maxFreq);
+  const pad = { left: 64, right: 24, top: 28, bottom: 48 };
+  const plotW = width - pad.left - pad.right;
+  const fullPlotH = height - pad.top - pad.bottom;
+  const bandIndicatorHeight = state.showBandIndicator ? BAND_INDICATOR_HEIGHT : 0;
+  const plotH = Math.max(1, fullPlotH - bandIndicatorHeight);
+  const minLogFreq = Math.log10(minFreq);
+  const maxLogFreq = Math.log10(maxFreq);
+  const x = (freq) => pad.left + ((Math.log10(freq) - minLogFreq) / (maxLogFreq - minLogFreq)) * plotW;
+  const y = (value) => pad.top + (1 - (value - minDb) / (maxDb - minDb)) * plotH;
+
+  chartView = { series, x, y, pad, plotW, plotH, bandIndicatorHeight, width, height, minFreq, maxFreq, minDb, maxDb, minLogFreq, maxLogFreq, hasPhaseSeries: false, isGroupDelay: true };
+  drawGrid({ x, y, phaseY: null, pad, plotW, plotH, width, height, minDb, maxDb, minFreq, maxFreq, minPhase: 0, maxPhase: 0, hasPhaseSeries: false });
+  drawSeries(series, x, y, minFreq, maxFreq);
+  drawMeasurementLabel();
+  if (hoverPoint) drawHoverGuide(hoverPoint);
+  drawLegend(series, pad.left + 10, pad.top + 26);
+  renderBandIndicatorOverlay();
+  syncZoomSliders();
+}
+
+function getGroupDelayRange(series, minFreq, maxFreq) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const curve of series) {
+    for (const point of curve.data) {
+      if (point.frequency < minFreq || point.frequency > maxFreq) continue;
+      min = Math.min(min, point.level);
+      max = Math.max(max, point.level);
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { minDb: -5, maxDb: 20 };
+  const padding = Math.max(1, (max - min) * 0.12);
+  return {
+    minDb: Math.floor(min - padding),
+    maxDb: Math.ceil(max + padding)
+  };
+}
+
+function drawImpulseChart() {
+  const { width, height } = prepareCanvas();
+  const impulses = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+  canvasWrap.classList.toggle("has-chart", Boolean(impulses.length));
+  emptyState.textContent = "导入 REW Impulse Response 文本文件后显示 IR 分析。";
+  emptyState.style.display = impulses.length ? "none" : "grid";
+  if (!impulses.length) {
+    chartView = null;
+    renderBandIndicatorOverlay();
+    hideTooltip();
+    return;
+  }
+
+  const pad = { left: 62, right: 24, top: 28, bottom: 46 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const impulseView = normalizeImpulseView(state.impulseView);
+  state.impulseView = impulseView;
+  const series = impulses.map((impulse) => ({
+    ...impulse,
+    data: buildImpulseDisplayData(impulse, impulseView),
+    phaseSeries: []
+  }));
+  const minTime = -impulseView.beforeMs;
+  const maxTime = impulseView.afterMs;
+  let peak = 0.001;
+  for (const item of series) {
+    for (const point of item.data) peak = Math.max(peak, Math.abs(point.value));
+  }
+  if (impulseView.normalize) {
+    for (const item of series) {
+      let itemPeak = 0.001;
+      for (const point of item.data) itemPeak = Math.max(itemPeak, Math.abs(point.value));
+      item.data = item.data.map((point) => ({ ...point, value: point.value / itemPeak }));
+    }
+    peak = 1;
+  }
+  const x = (timeMs) => pad.left + ((timeMs - minTime) / (maxTime - minTime)) * plotW;
+  const y = (value) => pad.top + (1 - ((value + peak) / (peak * 2))) * plotH;
+
+  chartView = { series, pad, plotW, plotH, width, height, isImpulse: true };
+  drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX: minTime, maxX: maxTime, minY: -peak, maxY: peak, xLabel: "时间 (ms)", yLabel: "IR 幅度" });
+  for (const item of series) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left, pad.top, plotW, plotH);
+    ctx.clip();
+    ctx.strokeStyle = displayCurveColor(item.color);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    item.data.forEach((point, index) => {
+      const px = x(point.timeMs);
+      const py = y(point.value);
+      if (index === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+  drawLegend(series, pad.left + 10, pad.top + 26);
+  if (bandIndicatorOverlay) bandIndicatorOverlay.hidden = true;
+}
+
+function drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX, maxX, minY, maxY, xLabel, yLabel }) {
+  if (!transparentExportMode) {
+    const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+    gradient.addColorStop(0, cssColor("--chart-bg-top", "#ffffff"));
+    gradient.addColorStop(1, cssColor("--chart-bg-bottom", "#f3f8fa"));
+    ctx.fillStyle = isDarkTheme() ? "rgba(5, 20, 47, 0.72)" : gradient;
+    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+  }
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#c8d5dd");
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.font = "12px Arial";
+  for (let tick = minX; tick <= maxX + 0.001; tick += 25) {
+    const px = x(tick);
+    ctx.beginPath();
+    ctx.moveTo(px, pad.top);
+    ctx.lineTo(px, pad.top + plotH);
+    ctx.stroke();
+    ctx.fillText(String(tick), px - 8, height - 18);
+  }
+  for (let index = 0; index <= 6; index++) {
+    const value = minY + ((maxY - minY) * index) / 6;
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(pad.left + plotW, py);
+    ctx.stroke();
+    ctx.fillText(value.toFixed(2), 16, py + 4);
+  }
+  ctx.fillText(xLabel, pad.left + plotW / 2 - 28, height - 6);
+  ctx.save();
+  ctx.translate(16, pad.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+  ctx.strokeStyle = cssColor("--chart-axis", "#849aa8");
+  ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+  if (bandIndicatorOverlay) bandIndicatorOverlay.hidden = true;
+}
+
+function drawWaterfallChart() {
+  const { width, height } = prepareCanvas();
+  const impulse = state.impulseResponses.find((item) => item.visible !== false);
+  canvasWrap.classList.toggle("has-chart", Boolean(impulse));
+  emptyState.textContent = "导入 REW Impulse Response 文本文件后显示三维瀑布图。";
+  emptyState.style.display = impulse ? "none" : "grid";
+  if (!impulse) {
+    chartView = null;
+    waterfallRenderer?.clear();
+    renderBandIndicatorOverlay();
+    hideTooltip();
+    return;
+  }
+
+  const waterfall = getWaterfallForImpulse(impulse);
+  const pad = { left: 70, right: 58, top: 34, bottom: 58 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+
+  const waterfallRenderSettings = {
+    ...getWaterfallRenderSettings(waterfall, state.waterfallView),
+    darkTheme: isDarkTheme(),
+    showContours: true
+  };
+  state.waterfallView.dbRange = waterfallRenderSettings.dbRange;
+  chartView = { series: [{ ...impulse, data: [], phaseSeries: [] }], impulse, waterfall, waterfallRenderSettings, pad, plotW, plotH, width, height, isWaterfall: true };
+  if (!waterfallRenderer) waterfallRenderer = new Waterfall3DRenderer(waterfallCanvas);
+  let rendered = false;
+  try {
+    rendered = waterfallRenderer.render(waterfall, waterfallRenderSettings);
+    if (!rendered && waterfallRenderer.reset()) {
+      rendered = waterfallRenderer.render(waterfall, waterfallRenderSettings);
+    }
+  } catch (error) {
+    console.warn("Waterfall WebGL render failed:", error);
+  }
+  if (!rendered) console.warn("Waterfall WebGL returned no drawable frame.");
+
+  const minFrequency = waterfall.frequencies[0] || 20;
+  const maxFrequency = waterfall.frequencies.at(-1) || 20000;
+  const minLog = Math.log10(minFrequency);
+  const maxLog = Math.log10(maxFrequency);
+  const project = (frequencyRatio, levelRatio, frameRatio) => projectWaterfallPoint(
+    waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, waterfallRenderSettings),
+    waterfallRenderSettings,
+    width,
+    height
+  );
+  drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, width, height, pad, plotW, plotH, minFrequency, maxFrequency, minLog, maxLog });
+  if (bandIndicatorOverlay) bandIndicatorOverlay.hidden = true;
+}
+
+function redrawWaterfallOverlayOnly() {
+  if (!chartView?.isWaterfall) return false;
+  const { waterfall, waterfallRenderSettings, width, height, pad, plotW, plotH } = chartView;
+  const minFrequency = waterfall.frequencies[0] || 20;
+  const maxFrequency = waterfall.frequencies.at(-1) || 20000;
+  const minLog = Math.log10(minFrequency);
+  const maxLog = Math.log10(maxFrequency);
+  const project = (frequencyRatio, levelRatio, frameRatio) => projectWaterfallPoint(
+    waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, waterfallRenderSettings),
+    waterfallRenderSettings,
+    width,
+    height
+  );
+  ctx.clearRect(0, 0, width, height);
+  drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, width, height, pad, plotW, plotH, minFrequency, maxFrequency, minLog, maxLog });
+  return true;
+}
+
+function drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, width, height, pad, plotW, minFrequency, maxFrequency, minLog, maxLog }) {
+  drawWaterfallWorldAxes({ project, waterfall, width, height, minFrequency, maxFrequency, minLog, maxLog });
+
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.font = "12px Arial";
+  ctx.fillText("频率 Hz / 时间 ms / 幅度 dB", pad.left + plotW / 2 - 78, height - 10);
+  ctx.fillText(`动态范围 ${waterfallRenderSettings.dbRange} dB`, pad.left + plotW - 116, pad.top + 18);
+  ctx.fillText("左键旋转 / 中键平移 / 右键调轴", pad.left + 16, pad.top + 18);
+  if (hoverPoint?.kind === "waterfall") drawWaterfallHoverGuide(hoverPoint);
+}
+
+function drawWaterfallWorldAxes({ project, waterfall, width, height, minFrequency, maxFrequency, minLog, maxLog }) {
+  const labelColor = cssColor("--chart-label", "#657484");
+  const label3d = (ratios, text, offsetX = 0, offsetY = 0, align = "center") => {
+    const point = project(...ratios);
+    if (!point) return;
+    ctx.save();
+    ctx.fillStyle = labelColor;
+    ctx.font = "12px Arial";
+    ctx.textAlign = align;
+    ctx.globalAlpha = 0.88;
+    ctx.fillText(text, clamp(point.x + offsetX, 12, width - 12), clamp(point.y + offsetY, 16, height - 12));
+    ctx.restore();
+  };
+
+  ctx.save();
+  ctx.lineCap = "round";
+
+  for (const freq of getMajorFrequencyTicks(minFrequency, maxFrequency)) {
+    const ratio = (Math.log10(freq) - minLog) / (maxLog - minLog);
+    label3d([ratio, 0, 0], formatFrequencyTick(freq), 0, 20);
+  }
+
+  const maxTimeMs = chartView.waterfallRenderSettings?.effectiveMaxTimeMs ?? getEffectiveWaterfallTimeMs(waterfall, state.waterfallView.dbRange);
+  for (const frameRatio of [0, 0.25, 0.5, 0.75, 1]) {
+    label3d([0, 0, frameRatio], `${Math.round(maxTimeMs * frameRatio)} ms`, -12, 4, "right");
+  }
+
+  for (const levelRatio of [0, 0.25, 0.5, 0.75, 1]) {
+    const db = Math.round(waterfallDbFromLevelRatio(waterfall, levelRatio, chartView.waterfallRenderSettings?.dbRange ?? state.waterfallView.dbRange));
+    label3d([-0.055, levelRatio, -0.065], `${db} dB`, -10, 4, "right");
+  }
+
+  label3d([1, 0, 0], "频率", 24, 8, "left");
+  label3d([-0.055, 1, -0.065], "dB", -16, -10, "right");
+  label3d([0, 0, 1], "时间", -14, 18, "right");
+  ctx.restore();
+}
+
+function drawWaterfallHoverGuide(point) {
+  ctx.save();
+  const settings = chartView.waterfallRenderSettings || getWaterfallRenderSettings(chartView.waterfall, state.waterfallView);
+  const project = (frequencyRatio, levelRatio, frameRatio) => projectWaterfallPoint(
+    waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, settings),
+    settings,
+    chartView.width,
+    chartView.height
+  );
+  const sample = project(point.frequencyRatio, point.levelRatio, point.frameRatio);
+  const foot = project(point.frequencyRatio, 0, point.frameRatio);
+  const freqFoot = project(point.frequencyRatio, 0, 0);
+  const timeFoot = project(0, 0, point.frameRatio);
+  const levelFoot = project(0, point.levelRatio, point.frameRatio);
+  drawWaterfallHoverCrossSections(point, settings, project);
+  ctx.strokeStyle = "rgba(21, 150, 189, 0.72)";
+  ctx.fillStyle = "rgba(21, 150, 189, 0.95)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  for (const [from, to] of [[sample, foot], [foot, freqFoot], [foot, timeFoot], [sample, levelFoot]]) {
+    if (!from || !to) continue;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.shadowColor = "rgba(21, 150, 189, 0.45)";
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.arc(sample?.x ?? point.screenX, sample?.y ?? point.screenY, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+  if (foot) {
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.64;
+    ctx.beginPath();
+    ctx.arc(foot.x, foot.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawWaterfallHoverCrossSections(point, settings, project) {
+  const { waterfall } = chartView;
+  if (!waterfall?.frames?.length || !waterfall?.frequencies?.length) return;
+  const frameIndex = nearestWaterfallFrameIndex(waterfall, point.timeMs);
+  const binIndex = nearestWaterfallFrequencyIndex(waterfall, point.frequency);
+  const frame = waterfall.frames[frameIndex];
+  if (!frame) return;
+
+  ctx.save();
+  ctx.lineWidth = 3.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(246, 248, 248, 0.92)";
+  ctx.shadowColor = "rgba(20, 26, 32, 0.32)";
+  ctx.shadowBlur = 4;
+
+  ctx.beginPath();
+  let started = false;
+  const minLog = Math.log10(waterfall.frequencies[0]);
+  const maxLog = Math.log10(waterfall.frequencies.at(-1));
+  const binStep = Math.max(1, Math.floor(waterfall.frequencies.length / 180));
+  for (let index = 0; index < waterfall.frequencies.length; index += binStep) {
+    const frequencyRatio = (Math.log10(waterfall.frequencies[index]) - minLog) / (maxLog - minLog);
+    const levelRatio = waterfallLevelRatio(waterfall, frame.values[index], settings.dbRange);
+    const projected = project(frequencyRatio, levelRatio + 0.014, point.frameRatio);
+    if (!projected) continue;
+    if (!started) {
+      ctx.moveTo(projected.x, projected.y);
+      started = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+  }
+  ctx.stroke();
+
+  ctx.beginPath();
+  started = false;
+  const frameStep = Math.max(1, Math.floor(waterfall.frames.length / 180));
+  for (let index = 0; index < waterfall.frames.length; index += frameStep) {
+    const slice = waterfall.frames[index];
+    if (slice.timeMs > settings.effectiveMaxTimeMs) continue;
+    const frameRatio = waterfallTimeRatio(waterfall, slice.timeMs, settings);
+    const levelRatio = waterfallLevelRatio(waterfall, slice.values[binIndex], settings.dbRange);
+    const projected = project(point.frequencyRatio, levelRatio + 0.014, frameRatio);
+    if (!projected) continue;
+    if (!started) {
+      ctx.moveTo(projected.x, projected.y);
+      started = true;
+    } else {
+      ctx.lineTo(projected.x, projected.y);
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function nearestWaterfallFrameIndex(waterfall, timeMs) {
+  let nearest = 0;
+  let best = Infinity;
+  waterfall.frames.forEach((frame, index) => {
+    const distance = Math.abs(frame.timeMs - timeMs);
+    if (distance < best) {
+      best = distance;
+      nearest = index;
+    }
+  });
+  return nearest;
+}
+
+function nearestWaterfallFrequencyIndex(waterfall, frequency) {
+  const frequencies = waterfall.frequencies || [];
+  if (!frequencies.length) return 0;
+  const targetLog = Math.log10(frequency);
+  let nearest = 0;
+  let best = Infinity;
+  frequencies.forEach((item, index) => {
+    const distance = Math.abs(Math.log10(item) - targetLog);
+    if (distance < best) {
+      best = distance;
+      nearest = index;
+    }
+  });
+  return nearest;
+}
+
 function drawDistortionGrid({ x, y, pad, plotW, plotH, width, height, minFreq, maxFreq, minValue, maxValue }) {
   if (!transparentExportMode) {
     const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
     gradient.addColorStop(0, cssColor("--chart-bg-top", "#ffffff"));
     gradient.addColorStop(0.58, cssColor("--chart-bg-mid", "#fbfdfe"));
     gradient.addColorStop(1, cssColor("--chart-bg-bottom", "#f3f8fa"));
-    ctx.fillStyle = isDarkTheme() ? "rgba(3, 12, 30, 0.025)" : gradient;
+    ctx.fillStyle = isDarkTheme() ? "rgba(5, 20, 47, 0.72)" : gradient;
     ctx.fillRect(pad.left, pad.top, plotW, plotH);
   }
 
@@ -1087,6 +1655,15 @@ function scheduleLightweightDraw() {
 }
 
 function drawCurrentChartView() {
+  if (chartView?.isWaterfall && redrawWaterfallOverlayOnly()) {
+    return;
+  }
+
+  if (state.analysisMode !== "frequency" && !state.distortionMode) {
+    drawChart();
+    return;
+  }
+
   if (state.distortionMode) {
     drawChart();
     return;
@@ -1313,7 +1890,7 @@ function niceLinearFrequencyStep(rawStep) {
 function drawGrid({ x, y, phaseY, pad, plotW, plotH, width, height, minDb, maxDb, minFreq, maxFreq, minPhase, maxPhase, hasPhaseSeries }) {
   if (!transparentExportMode) {
     if (isDarkTheme()) {
-      ctx.fillStyle = "rgba(3, 12, 30, 0.025)";
+      ctx.fillStyle = "rgba(5, 20, 47, 0.72)";
       ctx.fillRect(pad.left, pad.top, plotW, plotH);
     } else {
       const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
@@ -1796,19 +2373,23 @@ function updateTooltip(point, mouseX, mouseY) {
     updateDistortionTooltip(point, mouseX, mouseY);
     return;
   }
+  if (chartView?.isWaterfall) {
+    updateWaterfallTooltip(point, mouseX, mouseY);
+    return;
+  }
 
   const rows = (point.readings || []).map((reading) => `
     <div class="tooltip-series${reading.curve.id === point.curve.id ? " is-active" : ""}">
       <span class="tooltip-swatch" style="background:${displayCurveColor(reading.curve.color)}"></span>
       <span class="tooltip-series-name">${escapeHtml(reading.curve.name)}</span>
-      <strong>${reading.level === null ? "-" : `${reading.level.toFixed(2)} dB`}${reading.phase === null ? "" : ` / ${reading.phase.toFixed(1)}°`}</strong>
+      <strong>${formatTooltipLevel(reading.level)}${reading.phase === null ? "" : ` / ${reading.phase.toFixed(1)}°`}</strong>
     </div>
   `).join("");
 
   chartTooltip.innerHTML = `
     <div class="tooltip-name" style="color:${displayCurveColor(point.curve.color)}">${escapeHtml(point.curve.name)}</div>
     <div class="tooltip-row"><span>频点</span><strong>${formatFrequency(point.frequency)}</strong></div>
-    <div class="tooltip-row"><span>${point.kind === "phase" ? point.phaseLabel : "声压"}</span><strong>${point.kind === "phase" ? `${point.phase.toFixed(1)}°` : `${point.level.toFixed(2)} dB`}</strong></div>
+    <div class="tooltip-row"><span>${point.kind === "phase" ? point.phaseLabel : chartView?.isGroupDelay ? "群延迟" : "声压"}</span><strong>${point.kind === "phase" ? `${point.phase.toFixed(1)}°` : formatTooltipLevel(point.level)}</strong></div>
     <div class="tooltip-readings">${rows}</div>
   `;
 
@@ -1835,6 +2416,46 @@ function updateTooltip(point, mouseX, mouseY) {
   }
   chartTooltip.style.left = `${tooltipPosition.x}px`;
   chartTooltip.style.top = `${tooltipPosition.y}px`;
+}
+
+function updateWaterfallTooltip(point, mouseX, mouseY) {
+  chartTooltip.innerHTML = `
+    <div class="tooltip-name" style="color:#1596bd">${escapeHtml(point.curve.name)}</div>
+    <div class="tooltip-row"><span>频率轴</span><strong>${formatFrequency(point.frequency)}</strong></div>
+    <div class="tooltip-row"><span>时间轴</span><strong>${point.timeMs.toFixed(1)} ms</strong></div>
+    <div class="tooltip-row"><span>幅度轴</span><strong>${point.level.toFixed(1)} dB</strong></div>
+    <div class="tooltip-readings">
+      <div class="tooltip-series is-active">
+        <span class="tooltip-swatch" style="background:hsl(${Math.round(200 - point.levelRatio * 150)} 72% 48%)"></span>
+        <span class="tooltip-series-name">三维采样点</span>
+        <strong>${point.levelRatioPercent.toFixed(0)}%</strong>
+      </div>
+    </div>
+  `;
+
+  clearTimeout(chartTooltip.hideTimer);
+  chartTooltip.hidden = false;
+  requestAnimationFrame(() => chartTooltip.classList.add("is-visible"));
+
+  const wrap = canvas.parentElement.getBoundingClientRect();
+  const tooltipRect = chartTooltip.getBoundingClientRect();
+  const margin = 14;
+  let left = mouseX + margin;
+  let top = mouseY + margin;
+  if (left + tooltipRect.width > wrap.width) left = mouseX - tooltipRect.width - margin;
+  if (top + tooltipRect.height > wrap.height) top = mouseY - tooltipRect.height - margin;
+  left = Math.max(8, left);
+  top = Math.max(8, top);
+  tooltipPosition = tooltipPosition || { x: left, y: top };
+  tooltipPosition.x = lerp(tooltipPosition.x, left, TOOLTIP_FOLLOW_EASING);
+  tooltipPosition.y = lerp(tooltipPosition.y, top, TOOLTIP_FOLLOW_EASING);
+  chartTooltip.style.left = `${tooltipPosition.x}px`;
+  chartTooltip.style.top = `${tooltipPosition.y}px`;
+}
+
+function formatTooltipLevel(value) {
+  if (value === null || !Number.isFinite(value)) return "-";
+  return chartView?.isGroupDelay ? `${value.toFixed(2)} ms` : `${value.toFixed(2)} dB`;
 }
 
 function updateDistortionTooltip(point, mouseX, mouseY) {
@@ -1886,7 +2507,7 @@ function scheduleChartHover(event) {
 
 function handleScheduledChartHover() {
   hoverMoveFrame = null;
-  if (!pendingHoverClientPoint || dragState) return;
+  if (!pendingHoverClientPoint || dragState || waterfallDragState) return;
 
   const rect = canvas.getBoundingClientRect();
   const mouseX = pendingHoverClientPoint.x - rect.left;
@@ -1914,6 +2535,8 @@ function handleScheduledChartHover() {
 
 function findNearestPoint(mouseX, mouseY) {
   if (!chartView) return null;
+  if (chartView.isImpulse) return null;
+  if (chartView.isWaterfall) return findNearestWaterfallPoint(mouseX, mouseY);
 
   const { series, x, y, phaseY, pad, plotW, plotH, minFreq, maxFreq, minLogFreq, maxLogFreq } = chartView;
   if (mouseX < pad.left || mouseX > pad.left + plotW || mouseY < pad.top || mouseY > pad.top + plotH) {
@@ -2146,6 +2769,7 @@ function drawWatermark(options = {}) {
 
 function buildChartSvg() {
   if (!chartView) return "";
+  if (chartView.isWaterfall) return buildWaterfallSvg();
 
   const { series, x, y, phaseY, pad, plotW, plotH, width, height, minFreq, maxFreq, minDb, maxDb, minPhase, maxPhase, hasPhaseSeries } = chartView;
   const summaryHeight = state.exportDeviationSummary ? EXPORT_SUMMARY_HEIGHT : 0;
@@ -2228,6 +2852,75 @@ function buildChartSvg() {
   parts.push(`</svg>`);
 
   return parts.join("\n");
+}
+
+function buildWaterfallSvg() {
+  if (!chartView?.isWaterfall) return "";
+
+  const { width, height } = chartView;
+  const summaryHeight = state.exportDeviationSummary ? EXPORT_SUMMARY_HEIGHT : 0;
+  const svgHeight = height + summaryHeight;
+  const imageUrl = getWaterfallCompositeCanvas({ transparent: false }).toDataURL("image/png");
+  const parts = [];
+
+  parts.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${svgNumber(width)}" height="${svgNumber(svgHeight)}" viewBox="0 0 ${svgNumber(width)} ${svgNumber(svgHeight)}">`);
+  parts.push(`<title>FreqDig waterfall chart</title>`);
+  parts.push(`<image x="0" y="0" width="${svgNumber(width)}" height="${svgNumber(height)}" href="${imageUrl}" xlink:href="${imageUrl}" preserveAspectRatio="none"/>`);
+  if (state.exportDeviationSummary) parts.push(buildExportSummarySvg(width, height, summaryHeight, getExportSummaryTitle(), getExportSummaryItems()));
+  parts.push(`</svg>`);
+
+  return parts.join("\n");
+}
+
+function getWaterfallCompositeCanvas(options = {}) {
+  if (chartView?.isWaterfall && waterfallRenderer && chartView.waterfall) {
+    try {
+      waterfallRenderer.render(chartView.waterfall, {
+        ...chartView.waterfallRenderSettings,
+        darkTheme: isDarkTheme()
+      });
+    } catch (error) {
+      console.warn("Waterfall export render refresh failed:", error);
+    }
+  }
+
+  const transparent = options.transparent === true;
+  const exportCanvas = document.createElement("canvas");
+  exportCanvas.width = canvas.width;
+  exportCanvas.height = canvas.height;
+  const exportCtx = exportCanvas.getContext("2d");
+
+  if (!transparent) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = getCanvasDpr(rect);
+    exportCtx.save();
+    exportCtx.scale(dpr, dpr);
+    drawWaterfallExportBackground(exportCtx, rect.width, rect.height);
+    exportCtx.restore();
+  }
+
+  exportCtx.drawImage(waterfallCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
+  exportCtx.drawImage(canvas, 0, 0, exportCanvas.width, exportCanvas.height);
+  return exportCanvas;
+}
+
+function drawWaterfallExportBackground(targetCtx, width, height) {
+  const gradient = targetCtx.createLinearGradient(0, 0, width, height);
+  if (state.theme === "dark") {
+    gradient.addColorStop(0, "#081422");
+    gradient.addColorStop(0.52, "#0e232f");
+    gradient.addColorStop(1, "#050d19");
+    targetCtx.fillStyle = gradient;
+    targetCtx.fillRect(0, 0, width, height);
+    return;
+  }
+
+  gradient.addColorStop(0, "#f6faf8");
+  gradient.addColorStop(0.48, "#e2edef");
+  gradient.addColorStop(1, "#cadbe0");
+  targetCtx.fillStyle = gradient;
+  targetCtx.fillRect(0, 0, width, height);
 }
 
 function buildFrequencyBandSvg(x, pad, plotW, plotH, minFreq, maxFreq) {
@@ -2508,7 +3201,7 @@ function serializeCurve(curve) {
 }
 
 function hydrateCurve(curve, fallbackName) {
-  const data = Array.isArray(curve.data) ? curve.data
+  const data = cropToDefaultFrequencyRange(Array.isArray(curve.data) ? curve.data
     .map((point) => {
       const hydrated = { frequency: Number(point.frequency), level: Number(point.level) };
       const phase = Number(point.phase);
@@ -2516,7 +3209,7 @@ function hydrateCurve(curve, fallbackName) {
       return hydrated;
     })
     .filter((point) => Number.isFinite(point.frequency) && Number.isFinite(point.level) && point.frequency > 0)
-    .sort((a, b) => a.frequency - b.frequency) : [];
+    .sort((a, b) => a.frequency - b.frequency) : []);
 
   const hasPhase = dataHasPhase(data);
 
@@ -2534,6 +3227,102 @@ function hydrateCurve(curve, fallbackName) {
     phaseMargin: hasPhase && Boolean(curve.phaseMargin),
     smoothingCache: null,
     displayCache: null
+  };
+}
+
+function findNearestWaterfallPoint(mouseX, mouseY) {
+  const { waterfall, impulse, width, height, pad, plotW, plotH } = chartView;
+  if (!waterfall || !impulse) return null;
+  if (mouseX < pad.left || mouseX > pad.left + plotW || mouseY < pad.top || mouseY > pad.top + plotH) return null;
+
+  const frames = waterfall.frames;
+  const frequencies = waterfall.frequencies;
+  const minLog = Math.log10(frequencies[0]);
+  const maxLog = Math.log10(frequencies[frequencies.length - 1]);
+  const frameStride = 1;
+  const binStride = 1;
+  const settings = chartView.waterfallRenderSettings || getWaterfallRenderSettings(waterfall, state.waterfallView);
+  let nearest = null;
+  const threshold = 24;
+
+  for (let frameIndex = 0; frameIndex < frames.length; frameIndex += frameStride) {
+    const frame = frames[frameIndex];
+    if (frame.timeMs > settings.effectiveMaxTimeMs) continue;
+    const frameRatio = waterfallTimeRatio(waterfall, frame.timeMs, settings);
+    for (let binIndex = 0; binIndex < frequencies.length; binIndex += binStride) {
+      const frequency = frequencies[binIndex];
+      const frequencyRatio = (Math.log10(frequency) - minLog) / (maxLog - minLog);
+      const level = frame.values[binIndex];
+      const levelRatio = waterfallLevelRatio(waterfall, level, settings.dbRange);
+      const projected = projectWaterfallPoint(
+        waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, settings),
+        settings,
+        width,
+        height
+      );
+      if (!projected) continue;
+      const distance = Math.hypot(projected.x - mouseX, projected.y - mouseY);
+      if (distance > threshold || (nearest && distance >= nearest.distance)) continue;
+      nearest = {
+        curve: impulse,
+        seriesKey: "waterfall",
+        kind: "waterfall",
+        frequency,
+        frequencyRatio,
+        frameRatio,
+        timeMs: frame.timeMs,
+        level,
+        levelRatio,
+        levelRatioPercent: levelRatio * 100,
+        screenX: projected.x,
+        screenY: projected.y,
+        distance
+      };
+    }
+  }
+
+  return nearest;
+}
+
+function serializeImpulse(impulse) {
+  return {
+    id: impulse.id,
+    name: impulse.name,
+    fileName: impulse.fileName,
+    sampleInterval: impulse.sampleInterval,
+    sampleRate: impulse.sampleRate,
+    startTime: impulse.startTime,
+    peakIndex: impulse.peakIndex,
+    responseLength: impulse.responseLength,
+    dataOffsetDb: impulse.dataOffsetDb,
+    samples: impulse.samples,
+    color: impulse.color,
+    visible: impulse.visible
+  };
+}
+
+function hydrateImpulse(impulse, fallbackName) {
+  const samples = Array.isArray(impulse.samples)
+    ? impulse.samples.map(Number).filter((value) => Number.isFinite(value))
+    : [];
+  const sampleInterval = Number(impulse.sampleInterval);
+  if (!samples.length || !Number.isFinite(sampleInterval) || sampleInterval <= 0) return null;
+
+  return {
+    id: impulse.id || makeId(),
+    name: impulse.name || impulse.fileName || fallbackName,
+    fileName: impulse.fileName || fallbackName,
+    sampleInterval,
+    sampleRate: Number(impulse.sampleRate) || 1 / sampleInterval,
+    startTime: Number(impulse.startTime) || 0,
+    peakIndex: Math.max(0, Math.min(samples.length - 1, Math.round(Number(impulse.peakIndex) || 0))),
+    responseLength: Math.round(Number(impulse.responseLength) || samples.length),
+    dataOffsetDb: Number(impulse.dataOffsetDb) || 0,
+    samples,
+    color: normalizeColor(impulse.color) || nextCurveColor(),
+    visible: impulse.visible !== false,
+    waterfallCache: null,
+    waterfallCacheKey: ""
   };
 }
 
@@ -2557,6 +3346,9 @@ function saveProjectFile() {
       showBandIndicator: state.showBandIndicator,
       globalSmoothing: state.globalSmoothing,
       exportDeviationSummary: state.exportDeviationSummary,
+      analysisMode: state.analysisMode,
+      impulseView: normalizeImpulseView(state.impulseView),
+      waterfallView: normalizeWaterfallView(state.waterfallView),
       watermarkText: state.watermarkText,
       measurementModel: state.measurementModel,
       easterEggTriggerProbability: state.easterEggTriggerProbability,
@@ -2564,6 +3356,7 @@ function saveProjectFile() {
       theme: state.theme
     },
     curves: state.curves.map(serializeCurve),
+    impulseResponses: state.impulseResponses.map(serializeImpulse),
     target: state.target ? serializeCurve(state.target) : null
   };
 
@@ -2585,8 +3378,15 @@ async function loadProjectFile(file) {
   state.curves = (project.curves || [])
     .map((curve, index) => hydrateCurve(curve, `曲线 ${index + 1}`))
     .filter((curve) => curve.data.length);
+  state.impulseResponses = (project.impulseResponses || [])
+    .map((impulse, index) => hydrateImpulse(impulse, `IR ${index + 1}`))
+    .filter(Boolean)
+    .slice(0, 1);
   state.target = project.target ? hydrateCurve(project.target, "目标曲线") : null;
   state.mode = ["raw", "reference", "target"].includes(loadedState.mode) ? loadedState.mode : "raw";
+  state.analysisMode = ["frequency", "groupDelay", "impulse", "waterfall"].includes(loadedState.analysisMode) ? loadedState.analysisMode : "frequency";
+  state.impulseView = normalizeImpulseView(loadedState.impulseView);
+  state.waterfallView = normalizeWaterfallView(loadedState.waterfallView);
   state.referenceId = loadedState.referenceId || state.curves[0]?.id || null;
   state.tiltDbPerOct = Number(loadedState.tiltDbPerOct) || 0;
   state.applyTiltToCurves = loadedState.applyTiltToCurves !== false;
@@ -2627,6 +3427,16 @@ function renderCurveList() {
   curveList.innerHTML = "";
   if (state.distortionMode) {
     renderDistortionCurveControls();
+    return;
+  }
+
+  if (state.analysisMode === "impulse" || state.analysisMode === "waterfall") {
+    renderImpulseControls();
+    return;
+  }
+
+  if (state.analysisMode === "groupDelay") {
+    renderGroupDelayControls();
     return;
   }
 
@@ -2837,6 +3647,317 @@ function renderCurveList() {
   }
 }
 
+function renderImpulseAnalysisControls() {
+  state.impulseView = normalizeImpulseView(state.impulseView);
+  const visible = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+  const first = visible[0];
+  const peakMs = first ? ((first.peakIndex * first.sampleInterval + first.startTime) * 1000) : null;
+  const panel = document.createElement("div");
+  panel.className = "curve-item analysis-tools impulse-tools";
+  panel.innerHTML = `
+    <div class="analysis-tools__head">
+      <strong>IR 工具</strong>
+      <span>${first ? `${Math.round(first.sampleRate).toLocaleString()} Hz / 峰值 ${peakMs.toFixed(2)} ms` : "等待 IR 数据"}</span>
+    </div>
+    <label class="analysis-control">
+      <span>峰值前</span>
+      <input type="range" min="1" max="50" step="1" value="${state.impulseView.beforeMs}" data-impulse-setting="beforeMs">
+      <strong>${state.impulseView.beforeMs.toFixed(0)} ms</strong>
+    </label>
+    <label class="analysis-control">
+      <span>峰值后</span>
+      <input type="range" min="20" max="500" step="5" value="${state.impulseView.afterMs}" data-impulse-setting="afterMs">
+      <strong>${state.impulseView.afterMs.toFixed(0)} ms</strong>
+    </label>
+    <label class="analysis-check">
+      <input type="checkbox" data-impulse-setting="normalize" ${state.impulseView.normalize ? "checked" : ""}>
+      <span>按峰值归一化显示</span>
+    </label>
+    <button type="button" class="reset-impulse-view">重置 IR 视窗</button>
+  `;
+
+  panel.querySelectorAll("[data-impulse-setting]").forEach((input) => {
+    const handleImpulseSetting = (event) => {
+      const key = event.target.dataset.impulseSetting;
+      if (key === "normalize") {
+        state.impulseView.normalize = event.target.checked;
+      } else {
+        state.impulseView[key] = Number(event.target.value);
+        event.target.nextElementSibling.textContent = `${state.impulseView[key].toFixed(0)} ms`;
+      }
+      renderTitle();
+      renderMetrics();
+      drawChart();
+    };
+    input.addEventListener(input.type === "checkbox" ? "change" : "input", handleImpulseSetting);
+  });
+
+  panel.querySelector(".reset-impulse-view").addEventListener("click", () => {
+    state.impulseView = makeDefaultImpulseView();
+    render();
+  });
+
+  curveList.appendChild(panel);
+}
+
+function renderImpulseControls() {
+  if (state.analysisMode === "waterfall") {
+    renderWaterfallControls();
+  } else {
+    renderImpulseAnalysisControls();
+  }
+
+  for (const impulse of state.impulseResponses) {
+    const item = document.createElement("div");
+    item.className = "curve-item";
+    item.innerHTML = `
+      <span class="swatch" style="background:${displayCurveColor(impulse.color)}"></span>
+      <input class="curve-name-input" value="${escapeHtml(impulse.name)}" title="${escapeHtml(impulse.name)}" aria-label="IR 名称">
+      <button class="icon-button visibility-button${impulse.visible ? "" : " is-off"}" title="${impulse.visible ? "隐藏 IR" : "显示 IR"}" aria-label="${impulse.visible ? "隐藏 IR" : "显示 IR"}">${eyeIcon(impulse.visible)}</button>
+      <button class="icon-button danger-button" title="删除 IR" aria-label="删除 IR">${trashIcon()}</button>
+      <div class="curve-meta">${impulse.samples.length.toLocaleString()} samples / ${Math.round(impulse.sampleRate).toLocaleString()} Hz</div>
+      <div class="curve-options">
+        <label class="compact-color" title="曲线颜色">
+          <span>颜色</span>
+          <input type="color" value="${impulse.color}" aria-label="IR 颜色">
+        </label>
+      </div>
+    `;
+
+    const buttons = item.querySelectorAll("button");
+    const nameInput = item.querySelector(".curve-name-input");
+    const colorInput = item.querySelector("input[type='color']");
+
+    buttons[0].addEventListener("click", () => {
+      impulse.visible = !impulse.visible;
+      render();
+    });
+
+    buttons[1].addEventListener("click", () => {
+      state.impulseResponses = state.impulseResponses.filter((item) => item.id !== impulse.id);
+      render();
+    });
+
+    nameInput.addEventListener("input", (event) => {
+      impulse.name = event.target.value.trim() || "IR";
+      nameInput.title = impulse.name;
+      renderTitle();
+      drawChart();
+    });
+
+    colorInput.addEventListener("input", (event) => {
+      impulse.color = event.target.value;
+      item.querySelector(".swatch").style.background = displayCurveColor(impulse.color);
+      drawChart();
+    });
+
+    curveList.appendChild(item);
+  }
+}
+
+function renderGroupDelayControls() {
+  const phaseCurves = state.curves.filter((curve) => curve.hasPhase);
+  const visiblePhaseCurves = phaseCurves.filter((curve) => curve.visible);
+  const { minFreq, maxFreq } = getFrequencyRange();
+  const panel = document.createElement("div");
+  panel.className = "curve-item analysis-tools group-delay-tools";
+  panel.innerHTML = `
+    <div class="analysis-tools__head">
+      <strong>群延迟工具</strong>
+      <span>${visiblePhaseCurves.length}/${phaseCurves.length} 条相位曲线 / ${formatFrequency(minFreq)}-${formatFrequency(maxFreq)}</span>
+    </div>
+    <div class="analysis-button-grid">
+      <button type="button" data-group-delay-range="20,20000">全频</button>
+      <button type="button" data-group-delay-range="20,300">低频</button>
+      <button type="button" data-group-delay-range="300,2000">中频</button>
+      <button type="button" data-group-delay-range="2000,20000">高频</button>
+    </div>
+    <div class="analysis-note">群延迟由相位斜率计算；建议导入包含相位列的 REW 频响文本，并适当缩小频段观察异常峰值。</div>
+  `;
+
+  panel.querySelectorAll("[data-group-delay-range]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const [nextMin, nextMax] = button.dataset.groupDelayRange.split(",").map(Number);
+      state.axisMinFreq = nextMin;
+      state.axisMaxFreq = nextMax;
+      hideTooltip();
+      render();
+    });
+  });
+
+  curveList.appendChild(panel);
+
+  for (const curve of state.curves) {
+    const item = document.createElement("div");
+    item.className = `curve-item group-delay-curve${curve.hasPhase ? "" : " is-muted"}`;
+    item.innerHTML = `
+      <span class="swatch" style="background:${displayCurveColor(curve.color)}"></span>
+      <input class="curve-name-input" value="${escapeHtml(curve.name)}" title="${escapeHtml(curve.name)}" aria-label="曲线名称">
+      <button class="icon-button visibility-button${curve.visible ? "" : " is-off"}" title="${curve.visible ? "隐藏曲线" : "显示曲线"}" aria-label="${curve.visible ? "隐藏曲线" : "显示曲线"}">${eyeIcon(curve.visible)}</button>
+      <button class="icon-button danger-button" title="删除曲线" aria-label="删除曲线">${trashIcon()}</button>
+      <div class="curve-meta">${curve.hasPhase ? `${curve.data.length} 点 / 含相位` : "缺少相位列，无法计算群延迟"}</div>
+      <div class="curve-options">
+        <label class="compact-color" title="曲线颜色">
+          <span>颜色</span>
+          <input type="color" value="${curve.color}" aria-label="曲线颜色">
+        </label>
+        <label class="compact-select">
+          <span>平滑</span>
+          <select aria-label="群延迟平滑" ${curve.hasPhase ? "" : "disabled"}>
+            <option value="0"${selectedSmoothing(curve, 0)}>关闭</option>
+            <option value="0.0833333333"${selectedSmoothing(curve, 1 / 12)}>1/12 倍频程</option>
+            <option value="0.0416666667"${selectedSmoothing(curve, 1 / 24)}>1/24 倍频程</option>
+            <option value="0.0208333333"${selectedSmoothing(curve, 1 / 48)}>1/48 倍频程</option>
+          </select>
+        </label>
+      </div>
+    `;
+
+    const buttons = item.querySelectorAll("button");
+    const nameInput = item.querySelector(".curve-name-input");
+    const colorInput = item.querySelector("input[type='color']");
+    const smoothingSelect = item.querySelector("select");
+
+    buttons[0].addEventListener("click", () => {
+      curve.visible = !curve.visible;
+      render();
+    });
+
+    buttons[1].addEventListener("click", () => {
+      deleteCurve(curve.id);
+    });
+
+    nameInput.addEventListener("input", (event) => {
+      curve.name = event.target.value.trim() || "未命名曲线";
+      nameInput.title = curve.name;
+      renderTitle();
+      drawChart();
+    });
+
+    colorInput.addEventListener("input", (event) => {
+      curve.color = event.target.value;
+      item.querySelector(".swatch").style.background = displayCurveColor(curve.color);
+      drawChart();
+    });
+
+    smoothingSelect.addEventListener("change", (event) => {
+      curve.smoothingOctaves = Number(event.target.value);
+      clearCurveCaches(curve);
+      renderMetrics();
+      drawChart();
+    });
+
+    curveList.appendChild(item);
+  }
+}
+
+function renderWaterfallControls() {
+  const visibleImpulse = state.impulseResponses.find((item) => item.visible !== false);
+  const waterfall = visibleImpulse ? getWaterfallForImpulse(visibleImpulse) : null;
+  const dbRangeLimit = waterfall ? getWaterfallDbRangeLimit(waterfall) : 90;
+  state.waterfallView.dbRange = clamp(state.waterfallView.dbRange, 18, dbRangeLimit);
+  const panel = document.createElement("div");
+  panel.className = "curve-item waterfall-controls";
+  panel.innerHTML = `
+    <div class="waterfall-controls__head">
+      <strong>瀑布图调整</strong>
+      <span>${visibleImpulse ? escapeHtml(visibleImpulse.name) : "等待 IR 数据"}</span>
+    </div>
+    <div class="waterfall-control waterfall-control--select">
+      <label for="waterfallRenderMode">算法</label>
+      <select id="waterfallRenderMode" data-waterfall-setting="renderMode" aria-label="瀑布图算法">
+        <option value="relative"${state.waterfallView.renderMode === "rew" ? "" : " selected"}>相对衰减</option>
+        <option value="rew"${state.waterfallView.renderMode === "rew" ? " selected" : ""}>REW 归一化</option>
+      </select>
+      <strong>${state.waterfallView.renderMode === "rew" ? "REW" : "相对"}</strong>
+    </div>
+    <div class="waterfall-control waterfall-control--select">
+      <label for="waterfallSurfaceMode">绘制</label>
+      <select id="waterfallSurfaceMode" data-waterfall-setting="surfaceMode" aria-label="瀑布图绘制方式">
+        <option value="slice"${state.waterfallView.surfaceMode === "grid" ? "" : " selected"}>切片绘制</option>
+        <option value="grid"${state.waterfallView.surfaceMode === "grid" ? " selected" : ""}>网格曲面</option>
+      </select>
+      <strong>${state.waterfallView.surfaceMode === "grid" ? "网格" : "切片"}</strong>
+    </div>
+    <label class="waterfall-control">
+      <span>动态范围</span>
+      <input type="range" min="18" max="${dbRangeLimit}" step="1" value="${state.waterfallView.dbRange}" data-waterfall-setting="dbRange">
+      <strong>${state.waterfallView.dbRange} dB</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>切片数量</span>
+      <input type="range" min="20" max="501" step="1" value="${state.waterfallView.sliceCount ?? 101}" data-waterfall-setting="sliceCount">
+      <strong>${state.waterfallView.sliceCount ?? 101}</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>时间深度</span>
+      <input type="range" min="0.55" max="1.7" step="0.05" value="${state.waterfallView.timeScale}" data-waterfall-setting="timeScale">
+      <strong>${state.waterfallView.timeScale.toFixed(2)}x</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>整体缩放</span>
+      <input type="range" min="0.65" max="2.2" step="0.05" value="${state.waterfallView.zoom}" data-waterfall-setting="zoom">
+      <strong>${state.waterfallView.zoom.toFixed(2)}x</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>频率宽度</span>
+      <input type="range" min="0.45" max="2.8" step="0.05" value="${state.waterfallView.xScale ?? 1}" data-waterfall-setting="xScale">
+      <strong>${(state.waterfallView.xScale ?? 1).toFixed(2)}x</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>旋转</span>
+      <input type="range" min="-180" max="180" step="1" value="${state.waterfallView.yaw}" data-waterfall-setting="yaw">
+      <strong>${Math.round(state.waterfallView.yaw)}°</strong>
+    </label>
+    <label class="waterfall-control">
+      <span>俯仰</span>
+      <input type="range" min="0" max="89" step="1" value="${state.waterfallView.pitch}" data-waterfall-setting="pitch">
+      <strong>${Math.round(state.waterfallView.pitch)}°</strong>
+    </label>
+    <button type="button" class="reset-waterfall-view">重置视角</button>
+  `;
+
+  panel.querySelectorAll("[data-waterfall-setting]").forEach((input) => {
+    const handleWaterfallSetting = (event) => {
+      const key = event.target.dataset.waterfallSetting;
+      if (key === "renderMode") {
+        state.waterfallView.renderMode = event.target.value === "rew" ? "rew" : "relative";
+        state.waterfallView.dbRange = state.waterfallView.renderMode === "rew" ? 60 : 70;
+        waterfallRenderer?.clear();
+        render();
+        return;
+      }
+      if (key === "surfaceMode") {
+        state.waterfallView.surfaceMode = event.target.value === "grid" ? "grid" : "slice";
+        waterfallRenderer?.clear();
+        render();
+        return;
+      }
+      state.waterfallView[key] = Number(event.target.value);
+      if (key === "dbRange") state.waterfallView.dbRange = clamp(state.waterfallView.dbRange, 18, dbRangeLimit);
+      if (key === "sliceCount") state.waterfallView.sliceCount = clamp(Math.round(state.waterfallView.sliceCount), 20, 501);
+      const value = key === "dbRange"
+        ? `${state.waterfallView[key]} dB`
+        : key === "sliceCount"
+          ? `${state.waterfallView[key]}`
+          : key === "timeScale" || key === "zoom" || key === "xScale"
+          ? `${state.waterfallView[key].toFixed(2)}x`
+          : `${Math.round(state.waterfallView[key])}°`;
+      event.target.nextElementSibling.textContent = value;
+      drawChart();
+      renderMetrics();
+    };
+    input.addEventListener(input.tagName === "SELECT" ? "change" : "input", handleWaterfallSetting);
+  });
+
+  panel.querySelector(".reset-waterfall-view").addEventListener("click", () => {
+    state.waterfallView = makeDefaultWaterfallView();
+    render();
+  });
+
+  curveList.appendChild(panel);
+}
+
 function renderDistortionCurveControls() {
   renderDistortionCurveControlsPanel({
     curveList,
@@ -2856,36 +3977,44 @@ function renderDistortionCurveControls() {
 
 function renderControls() {
   mode.value = state.mode;
+  syncAnalysisModeSwitch();
   workspace?.classList.toggle("is-distortion-mode", state.distortionMode);
   document.body.classList.toggle("is-distortion-mode", state.distortionMode);
+  document.body.classList.toggle("is-impulse-mode", !state.distortionMode && state.analysisMode === "impulse");
+  document.body.classList.toggle("is-group-delay-mode", !state.distortionMode && state.analysisMode === "groupDelay");
+  document.body.classList.toggle("is-waterfall-mode", !state.distortionMode && state.analysisMode === "waterfall");
   canvasWrap.classList.toggle("is-distortion-mode", state.distortionMode);
-  if (sidebarTitle) sidebarTitle.textContent = state.distortionMode ? "失真曲线" : "曲线";
+  if (sidebarTitle) {
+    const sidebarTitles = {
+      frequency: "曲线",
+      groupDelay: "群延迟",
+      impulse: "IR 分析",
+      waterfall: "瀑布图"
+    };
+    sidebarTitle.textContent = state.distortionMode ? "失真曲线" : sidebarTitles[state.analysisMode];
+  }
   if (sidebarHint) {
     sidebarHint.textContent = state.distortionMode
       ? "失真模式支持 REW 导出的 THD 文本文件；可控制 THD、Noise 与各阶谐波的显隐和颜色。"
-      : "CSV 支持 frequency_hz, level_db 表头，也支持逗号、Tab、分号或空格分隔的两列数字。频率轴使用对数坐标。";
+      : state.analysisMode === "impulse" || state.analysisMode === "waterfall"
+        ? "IR 分析和瀑布图使用 REW 导出的 Impulse Response 文本文件。"
+        : state.analysisMode === "groupDelay"
+          ? "群延迟由带相位列的频响数据计算，使用相位随频率变化的斜率。"
+          : "CSV 支持 frequency_hz, level_db 表头，也支持逗号、Tab、分号或空格分隔的两列数字。频率轴使用对数坐标。";
   }
-  distortionModeToggle?.classList.toggle("is-active", state.distortionMode);
-  distortionModeToggle?.setAttribute("aria-pressed", String(state.distortionMode));
-  if (distortionModeToggle) {
-    distortionModeToggle.innerHTML = `
-      <span class="mode-switch-thumb" aria-hidden="true"></span>
-      <span class="mode-switch-label${state.distortionMode ? "" : " is-active"}">曲线</span>
-      <span class="mode-switch-label${state.distortionMode ? " is-active" : ""}">失真</span>
-    `;
-    distortionModeToggle.title = state.distortionMode ? "切换到曲线模式" : "切换到失真模式";
-    distortionModeToggle.setAttribute("aria-label", distortionModeToggle.title);
-  }
-  distortionModeToggle.disabled = false;
   mode.disabled = state.distortionMode;
-  mode.hidden = state.distortionMode;
+  mode.hidden = state.distortionMode || state.analysisMode !== "frequency";
   reference.disabled = state.distortionMode;
-  reference.hidden = state.distortionMode;
+  reference.hidden = state.distortionMode || state.analysisMode !== "frequency";
   if (curveFilesButton) {
     curveFilesButton.hidden = false;
-    curveFilesButton.childNodes[0].nodeValue = state.distortionMode ? "导入失真" : "导入曲线";
+    curveFilesButton.childNodes[0].nodeValue = state.distortionMode
+      ? "导入失真"
+      : state.analysisMode === "impulse" || state.analysisMode === "waterfall"
+        ? "导入 IR"
+        : "导入曲线";
   }
-  if (targetFileButton) targetFileButton.hidden = state.distortionMode;
+  if (targetFileButton) targetFileButton.hidden = state.distortionMode || state.analysisMode !== "frequency";
   if (distortionAnalysisRange) {
     distortionAnalysisRange.hidden = !state.distortionMode;
     distortionAnalysisRange.value = getDistortionAnalysisRange().id;
@@ -2911,8 +4040,8 @@ function renderControls() {
   }
 
   reference.value = state.referenceId || "";
-  reference.disabled = state.distortionMode || state.curves.length < 2 || state.mode !== "reference";
-  reference.hidden = state.distortionMode;
+  reference.disabled = state.distortionMode || state.analysisMode !== "frequency" || state.curves.length < 2 || state.mode !== "reference";
+  reference.hidden = state.distortionMode || state.analysisMode !== "frequency";
 
   if (state.mode === "target" && !state.target) {
     state.mode = "raw";
@@ -2993,6 +4122,21 @@ function getDeviationSummaryItems() {
   ];
 }
 
+function getActiveAnalysisView() {
+  return state.distortionMode ? "distortion" : state.analysisMode;
+}
+
+function syncAnalysisModeSwitch() {
+  if (!analysisModeSwitch) return;
+  const activeView = getActiveAnalysisView();
+  for (const button of analysisModeSwitch.querySelectorAll("[data-analysis-view]")) {
+    const isActive = button.dataset.analysisView === activeView;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+    button.tabIndex = isActive ? 0 : -1;
+  }
+}
+
 function getExportSummaryTitle() {
   return state.distortionMode ? "失真分析" : "偏差概要";
 }
@@ -3030,14 +4174,36 @@ function setMetricItems(title, items) {
 }
 
 function renderMetrics() {
-  if (state.distortionMode) {
-    setMetricItems("失真分析", getDistortionSummaryItems());
-    metricGrid?.classList.add("is-animation-disabled");
-    if (metricAnimationStage) metricAnimationStage.hidden = true;
-    return;
-  }
+  const { minFreq, maxFreq } = getFrequencyRange();
+  const groupDelaySeries = state.analysisMode === "groupDelay"
+    ? makeGroupDelaySeries(state.curves, { getData: (curve) => displayData(curve, { applyTilt: false, applyOffset: false }) })
+    : [];
+  const visibleWaterfallImpulse = state.analysisMode === "waterfall"
+    ? state.impulseResponses.find((item) => item.visible !== false)
+    : null;
+  const analysisItems = {
+    frequency: getDeviationSummaryItems(),
+    groupDelay: getGroupDelaySummaryItems(groupDelaySeries, { minFreq, maxFreq }),
+    impulse: getImpulseSummaryItems(state.impulseResponses),
+    waterfall: getWaterfallSummaryItems(state.impulseResponses, {
+      view: state.waterfallView,
+      waterfall: visibleWaterfallImpulse ? getWaterfallForImpulse(visibleWaterfallImpulse) : null,
+      effectiveMaxTimeMs: visibleWaterfallImpulse
+        ? getEffectiveWaterfallTimeMs(getWaterfallForImpulse(visibleWaterfallImpulse), state.waterfallView.dbRange)
+        : null
+    })
+  };
+  const analysisTitles = {
+    frequency: "偏差摘要",
+    groupDelay: "群延迟分析",
+    impulse: "IR 分析",
+    waterfall: "瀑布图分析"
+  };
 
-  setMetricItems("偏差摘要", getDeviationSummaryItems());
+  setMetricItems(
+    state.distortionMode ? "失真分析" : analysisTitles[state.analysisMode],
+    state.distortionMode ? getDistortionSummaryItems() : analysisItems[state.analysisMode]
+  );
   metricGrid?.classList.toggle("is-animation-disabled", !state.mineCartAnimationEnabled);
   if (metricAnimationStage) metricAnimationStage.hidden = !state.mineCartAnimationEnabled;
   metricAnimationController?.syncVisibility();
@@ -3058,15 +4224,24 @@ function setMineCartAnimationEnabled(enabled) {
   metricAnimationController?.setEnabled(state.mineCartAnimationEnabled);
 }
 
-function setDistortionMode(enabled) {
-  state.distortionMode = Boolean(enabled);
+function setAnalysisView(view) {
+  const normalizedView = ["frequency", "distortion", "impulse", "groupDelay", "waterfall"].includes(view)
+    ? view
+    : "frequency";
+  state.distortionMode = normalizedView === "distortion";
   if (state.distortionMode) {
     const range = getDistortionAnalysisRange();
     state.axisMinFreq = range.min;
     state.axisMaxFreq = range.max;
+  } else {
+    state.analysisMode = normalizedView;
   }
   hideTooltip();
   render();
+}
+
+function setDistortionMode(enabled) {
+  setAnalysisView(enabled ? "distortion" : "frequency");
 }
 
 function renderTitle() {
@@ -3082,6 +4257,31 @@ function renderTitle() {
     document.getElementById("chartSubtitle").textContent = measurements.length
       ? `${titleText} / ${rangeText} / ${analysisRange.label} / THD 与谐波失真 (${distortionAxisUnit()})`
       : `${rangeText} / ${analysisRange.label} / 导入 REW THD 文本文件`;
+    return;
+  }
+
+  if (state.analysisMode === "groupDelay") {
+    document.getElementById("chartTitle").textContent = "群延迟";
+    const { minFreq, maxFreq } = getFrequencyRange();
+    document.getElementById("chartSubtitle").textContent = `${formatFrequency(minFreq)} - ${formatFrequency(maxFreq)} / ms / 由相位斜率计算`;
+    return;
+  }
+
+  if (state.analysisMode === "impulse") {
+    const visible = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+    document.getElementById("chartTitle").textContent = "IR 分析";
+    document.getElementById("chartSubtitle").textContent = visible.length
+      ? `${visible.length === 1 ? visible[0].name : `${visible.length} 组 IR`} / -5 至 120 ms / 时域脉冲响应`
+      : "导入 REW Impulse Response 文本文件";
+    return;
+  }
+
+  if (state.analysisMode === "waterfall") {
+    const visible = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+    document.getElementById("chartTitle").textContent = "三维瀑布图";
+    document.getElementById("chartSubtitle").textContent = visible.length
+      ? `${visible[0].name} / 20 Hz - 20 kHz / 101 帧 WebGL 衰减表面`
+      : "导入 REW Impulse Response 文本文件";
     return;
   }
 
@@ -3130,8 +4330,10 @@ targetFile.addEventListener("change", async (event) => {
   }
 });
 
-distortionModeToggle.addEventListener("click", () => {
-  setDistortionMode(!state.distortionMode);
+analysisModeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-analysis-view]");
+  if (!button || !analysisModeSwitch.contains(button)) return;
+  setAnalysisView(button.dataset.analysisView);
 });
 
 distortionAnalysisRange?.addEventListener("change", (event) => {
@@ -3387,12 +4589,19 @@ function exportPng(options = {}) {
 }
 
 function getExportPngDataUrl(transparent) {
+  const exportCanvas = chartView?.isWaterfall
+    ? getWaterfallCompositeCanvas({ transparent })
+    : canvas;
+  const exportState = chartView?.isWaterfall
+    ? { ...state, showBandIndicator: false }
+    : state;
+
   return buildExportPngDataUrl({
-    canvas,
+    canvas: exportCanvas,
     transparent,
-    state,
+    state: exportState,
     chartView,
-    getCanvasDpr,
+    getCanvasDpr: chartView?.isWaterfall ? () => canvas.width / Math.max(1, chartView.width) : getCanvasDpr,
     getExportSummaryTitle,
     getExportSummaryItems,
     frequencyBands: FREQUENCY_BANDS,
@@ -3556,6 +4765,14 @@ canvas.addEventListener("wheel", (event) => {
   if (!chartView) return;
   event.preventDefault();
 
+  if (chartView.isWaterfall) {
+    const factor = event.deltaY > 0 ? 0.9 : 1.1;
+    state.waterfallView.zoom = clamp(state.waterfallView.zoom * factor, 0.65, 2.2);
+    hideTooltip();
+    drawChart();
+    return;
+  }
+
   if (event.shiftKey) {
     panChart(event.deltaY, 0);
     return;
@@ -3572,12 +4789,49 @@ canvas.addEventListener("wheel", (event) => {
 }, { passive: false });
 
 canvas.addEventListener("mousedown", (event) => {
-  if (!chartView || event.button !== 0) return;
+  if (!chartView) return;
+  if (chartView.isWaterfall) {
+    if (![0, 1, 2].includes(event.button)) return;
+    event.preventDefault();
+    const mode = event.button === 1 ? "pan" : event.button === 2 ? "shape" : "rotate";
+    waterfallDragState = {
+      mode,
+      x: event.clientX,
+      y: event.clientY,
+      yaw: state.waterfallView.yaw,
+      pitch: state.waterfallView.pitch,
+      panX: state.waterfallView.panX ?? 0,
+      panY: state.waterfallView.panY ?? 0,
+      dbRange: state.waterfallView.dbRange,
+      xScale: state.waterfallView.xScale ?? 1
+    };
+    hideTooltip();
+    canvas.classList.add("is-dragging");
+    return;
+  }
+  if (event.button !== 0) return;
   dragState = { x: event.clientX, y: event.clientY };
   canvas.classList.add("is-dragging");
 });
 
 window.addEventListener("mousemove", (event) => {
+  if (waterfallDragState) {
+    const deltaX = event.clientX - waterfallDragState.x;
+    const deltaY = event.clientY - waterfallDragState.y;
+    if (waterfallDragState.mode === "pan") {
+      state.waterfallView.panX = clamp(waterfallDragState.panX + deltaX * 0.006, -1.6, 1.6);
+      state.waterfallView.panY = clamp(waterfallDragState.panY - deltaY * 0.006, -1.1, 1.1);
+    } else if (waterfallDragState.mode === "shape") {
+      const dbRangeLimit = chartView?.waterfall ? getWaterfallDbRangeLimit(chartView.waterfall) : 110;
+      state.waterfallView.dbRange = clamp(Math.round(waterfallDragState.dbRange + deltaY * 0.18), 18, dbRangeLimit);
+      state.waterfallView.xScale = clamp(waterfallDragState.xScale * (2 ** (deltaX / 280)), 0.45, 2.8);
+    } else {
+      state.waterfallView.yaw = clamp(waterfallDragState.yaw + deltaX * 0.28, -180, 180);
+      state.waterfallView.pitch = clamp(waterfallDragState.pitch + deltaY * 0.2, 0, 89);
+    }
+    drawChart();
+    return;
+  }
   if (!dragState) return;
   const deltaX = event.clientX - dragState.x;
   const deltaY = event.clientY - dragState.y;
@@ -3586,13 +4840,26 @@ window.addEventListener("mousemove", (event) => {
 });
 
 window.addEventListener("mouseup", () => {
+  const endedWaterfallDrag = Boolean(waterfallDragState);
   dragState = null;
+  waterfallDragState = null;
   canvas.classList.remove("is-dragging");
+  if (endedWaterfallDrag && state.analysisMode === "waterfall") renderCurveList();
 });
 
 canvas.addEventListener("mousemove", (event) => {
-  if (dragState) return;
+  if (dragState || waterfallDragState) return;
   scheduleChartHover(event);
+});
+
+canvas.addEventListener("contextmenu", (event) => {
+  if (!chartView?.isWaterfall) return;
+  event.preventDefault();
+});
+
+canvas.addEventListener("auxclick", (event) => {
+  if (!chartView?.isWaterfall) return;
+  event.preventDefault();
 });
 
 canvas.addEventListener("mouseleave", () => {
@@ -3616,6 +4883,17 @@ mobileMenuToggle.addEventListener("click", () => {
   mobileMenuToggle.classList.toggle("is-open", isOpen);
   mobileMenuToggle.setAttribute("aria-expanded", String(isOpen));
   mobileMenuToggle.setAttribute("aria-label", isOpen ? "关闭工具菜单" : "打开工具菜单");
+});
+
+toolbarMenuToggle?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setToolbarMenuOpen(!toolbarMenuPanel?.classList.contains("is-open"));
+});
+
+toolbarMenuPanel?.addEventListener("click", (event) => {
+  if (event.target.closest("input[type='checkbox']")) return;
+  if (event.target.closest("input[type='file']")) return;
+  if (event.target.closest("button, .toolbar-menu-file")) setToolbarMenuOpen(false);
 });
 
 function syncEasterEggToggle() {
@@ -3655,6 +4933,10 @@ setupCatAvatarEasterEgg({
 });
 
 document.addEventListener("click", (event) => {
+  if (toolbarMenuPanel?.classList.contains("is-open") && !toolbarMenuPanel.contains(event.target) && !toolbarMenuToggle?.contains(event.target)) {
+    setToolbarMenuOpen(false);
+  }
+
   if (!toolbar.classList.contains("is-open")) return;
   if (toolbar.contains(event.target) || mobileMenuToggle.contains(event.target)) return;
 
@@ -3665,6 +4947,9 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setToolbarMenuOpen(false);
+  }
   if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.key.toLowerCase() !== "l") return;
   event.preventDefault();
   revealAppSettingsButton();
@@ -3684,7 +4969,8 @@ themeController = createThemeController({
   saveUserSettings,
   cssColorCache,
   renderCurveList,
-  drawChart
+  drawChart,
+  prepareThemeScene: () => nightModeSceneReady
 });
 setTheme(state.theme, { persist: false, redraw: false });
 render();

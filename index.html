@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <!--
   FreqDig
   Copyright (c) 2026 Diggercat
@@ -23,112 +23,7 @@
     </defs>
   </svg>
   <div class="app">
-    <svg class="night-parallax-scene" viewBox="0 0 1200 1000" preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="nightSkyGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#061135"/>
-          <stop offset="0.52" stop-color="#1d3173"/>
-          <stop offset="0.78" stop-color="#6644a8"/>
-          <stop offset="1" stop-color="#121f45"/>
-        </linearGradient>
-        <radialGradient id="milkyGlow" cx="54%" cy="42%" r="52%">
-          <stop offset="0" stop-color="#dbe8ff" stop-opacity="0.2"/>
-          <stop offset="0.54" stop-color="#b6caff" stop-opacity="0.08"/>
-          <stop offset="1" stop-color="#b6caff" stop-opacity="0"/>
-        </radialGradient>
-        <linearGradient id="meteorGradient" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#ff87c8" stop-opacity="0"/>
-          <stop offset="0.62" stop-color="#ff9eda" stop-opacity="0.7"/>
-          <stop offset="1" stop-color="#fff5c6" stop-opacity="1"/>
-        </linearGradient>
-        <linearGradient id="mountainBackGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#2e4f93" stop-opacity="0.72"/>
-          <stop offset="1" stop-color="#132b5e" stop-opacity="0.88"/>
-        </linearGradient>
-        <linearGradient id="mountainMidGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#1d3c78" stop-opacity="0.88"/>
-          <stop offset="1" stop-color="#0a214e" stop-opacity="0.96"/>
-        </linearGradient>
-        <linearGradient id="mountainFrontGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#0b2859" stop-opacity="0.96"/>
-          <stop offset="1" stop-color="#041631" stop-opacity="1"/>
-        </linearGradient>
-        <linearGradient id="riverGlowGradient" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stop-color="#6b89d7" stop-opacity="0.08"/>
-          <stop offset="0.48" stop-color="#93b8ff" stop-opacity="0.28"/>
-          <stop offset="1" stop-color="#6b89d7" stop-opacity="0.06"/>
-        </linearGradient>
-        <filter id="lampGlow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="5" result="blur"/>
-          <feMerge>
-            <feMergeNode in="blur"/>
-            <feMergeNode in="SourceGraphic"/>
-          </feMerge>
-        </filter>
-      </defs>
-      <g class="night-layer night-layer--sky">
-        <rect width="1200" height="1000" fill="url(#nightSkyGradient)"/>
-        <ellipse cx="650" cy="420" rx="560" ry="250" fill="url(#milkyGlow)"/>
-      </g>
-      <g class="night-layer night-layer--stars">
-        <circle cx="52" cy="108" r="2.1"/><circle cx="128" cy="178" r="1.5"/><circle cx="236" cy="126" r="1.9"/>
-        <circle cx="354" cy="214" r="1.5"/><circle cx="460" cy="148" r="2.2"/><circle cx="575" cy="190" r="1.4"/>
-        <circle cx="642" cy="112" r="1.8"/><circle cx="746" cy="226" r="2.1"/><circle cx="858" cy="162" r="1.5"/>
-        <circle cx="946" cy="206" r="2.2"/><circle cx="1084" cy="132" r="1.8"/><circle cx="1160" cy="238" r="1.5"/>
-        <circle cx="710" cy="292" r="1.4"/><circle cx="1016" cy="276" r="1.7"/><circle cx="300" cy="304" r="1.5"/>
-        <circle cx="168" cy="292" r="1.2"/><circle cx="520" cy="262" r="1.5"/><circle cx="1120" cy="318" r="1.4"/>
-      </g>
-      <g class="night-layer night-layer--meteors">
-        <path class="meteor meteor--one" d="M70 118 L158 174" stroke="url(#meteorGradient)" stroke-width="4" stroke-linecap="round"/>
-        <path class="meteor meteor--two" d="M424 92 L520 152" stroke="url(#meteorGradient)" stroke-width="4" stroke-linecap="round"/>
-        <path class="meteor meteor--three" d="M778 236 L888 304" stroke="url(#meteorGradient)" stroke-width="4" stroke-linecap="round"/>
-        <path class="meteor meteor--four" d="M1054 174 L1142 228" stroke="url(#meteorGradient)" stroke-width="3.5" stroke-linecap="round"/>
-        <path class="meteor meteor--five" d="M598 320 L672 366" stroke="url(#meteorGradient)" stroke-width="3.2" stroke-linecap="round"/>
-      </g>
-      <g class="night-layer night-layer--horizon-glow">
-        <path d="M0 594 C180 552 305 606 500 582 C675 560 798 612 970 580 C1060 563 1136 570 1200 596 L1200 760 L0 760 Z"/>
-      </g>
-      <g class="night-layer night-layer--mountains-far">
-        <path d="M0 650 C70 622 138 636 218 610 C308 581 374 632 460 606 C570 573 632 636 742 600 C855 563 920 638 1020 606 C1104 579 1152 598 1200 622 L1200 1000 L0 1000 Z"/>
-      </g>
-      <g class="night-layer night-layer--mountains-back">
-        <path d="M0 704 C95 632 168 684 262 650 C386 606 455 704 565 624 C670 548 745 676 856 646 C962 620 1004 722 1092 638 C1140 592 1172 622 1200 650 L1200 1000 L0 1000 Z"/>
-        <path class="mountain-ridge mountain-ridge--back" d="M470 617 C540 588 610 574 684 606 C618 596 555 612 502 650 Z"/>
-      </g>
-      <g class="night-layer night-layer--mountains-mid">
-        <path d="M0 770 C86 712 150 734 244 704 C338 674 420 748 516 714 C632 670 700 754 818 718 C928 684 1010 774 1100 710 C1145 679 1178 696 1200 718 L1200 1000 L0 1000 Z"/>
-        <path class="mountain-ridge mountain-ridge--mid" d="M716 711 C782 690 848 690 920 720 C850 716 792 728 742 756 Z"/>
-      </g>
-      <g class="night-layer night-layer--mountains-front">
-        <path d="M0 842 C78 748 158 762 260 786 C372 812 452 884 555 896 C705 916 820 946 935 918 C1026 894 1100 810 1200 830 L1200 1000 L0 1000 Z"/>
-        <path class="mountain-river" d="M205 798 C340 776 426 862 590 910 C728 952 876 948 1042 864 C1118 826 1170 850 1188 924 C1060 966 815 982 604 944 C430 912 288 860 205 798 Z"/>
-      </g>
-      <g class="night-layer night-layer--mountains-near">
-        <path d="M0 910 C88 862 180 872 286 900 C408 932 515 956 642 938 C760 922 862 878 980 892 C1082 904 1138 934 1200 922 L1200 1000 L0 1000 Z"/>
-      </g>
-      <g class="night-layer night-layer--lamps">
-        <g class="hanging-lamp hanging-lamp--moon">
-          <line x1="618" y1="66" x2="618" y2="282"/>
-          <circle cx="618" cy="285" r="6" class="lamp-cap"/>
-          <path class="moon-lamp" filter="url(#lampGlow)" d="M641 295a29 29 0 1 1-33-43 34 34 0 0 0 33 43z"/>
-        </g>
-        <g class="hanging-lamp hanging-lamp--star hanging-lamp--star-one">
-          <line x1="312" y1="66" x2="312" y2="220"/>
-          <circle cx="312" cy="223" r="4" class="lamp-cap"/>
-          <path filter="url(#lampGlow)" d="M312 205l5 12 13 1-10 8 3 13-11-7-11 7 3-13-10-8 13-1z"/>
-        </g>
-        <g class="hanging-lamp hanging-lamp--star hanging-lamp--star-two">
-          <line x1="930" y1="66" x2="930" y2="252"/>
-          <circle cx="930" cy="255" r="4" class="lamp-cap"/>
-          <path filter="url(#lampGlow)" d="M930 238l4 10 11 1-8 7 2 11-9-6-9 6 2-11-8-7 11-1z"/>
-        </g>
-        <g class="hanging-lamp hanging-lamp--star hanging-lamp--star-three">
-          <line x1="1070" y1="66" x2="1070" y2="196"/>
-          <circle cx="1070" cy="199" r="3.5" class="lamp-cap"/>
-          <path filter="url(#lampGlow)" d="M1070 183l4 9 10 1-8 6 3 10-9-5-9 5 3-10-8-6 10-1z"/>
-        </g>
-      </g>
-    </svg>
+    <div data-night-scene></div>
     <header>
       <div class="brand-group">
         <h1>FreqDig</h1>
@@ -173,27 +68,35 @@
           <option value="low">低频 60-300</option>
           <option value="ultra-high">超高频 10k-20k</option>
         </select>
-        <button id="distortionModeToggle" type="button" aria-pressed="false">失真模式</button>
-        <button id="saveProject" type="button">保存工程</button>
-        <label class="file-button">
-          加载工程
-          <input id="projectFile" type="file" accept=".json,application/json">
-        </label>
-        <button id="loadDemo" type="button">示例数据</button>
-        <div class="export-split">
-          <button id="exportPng" class="export-main" type="button">导出 PNG</button>
-          <button class="export-arrow" type="button" aria-label="更多 PNG 导出选项" aria-haspopup="true">
+        <div id="analysisModeSwitch" class="analysis-mode-switch" role="tablist" aria-label="分析模式">
+          <button type="button" data-analysis-view="frequency" role="tab" aria-selected="true">频响</button>
+          <button type="button" data-analysis-view="distortion" role="tab" aria-selected="false">失真</button>
+          <button type="button" data-analysis-view="impulse" role="tab" aria-selected="false">IR</button>
+          <button type="button" data-analysis-view="groupDelay" role="tab" aria-selected="false">群延迟</button>
+          <button type="button" data-analysis-view="waterfall" role="tab" aria-selected="false">瀑布图</button>
+        </div>
+        <div class="toolbar-menu">
+          <button id="toolbarMenuToggle" class="toolbar-menu-toggle" type="button" aria-label="打开通用操作菜单" aria-haspopup="true" aria-expanded="false">
+            操作
             <span aria-hidden="true"></span>
           </button>
-          <div class="export-menu" role="menu">
+          <div class="toolbar-menu-panel" role="menu" aria-labelledby="toolbarMenuToggle">
+            <button id="saveProject" type="button" role="menuitem">保存工程</button>
+            <label class="toolbar-menu-file" role="menuitem">
+              加载工程
+              <input id="projectFile" type="file" accept=".json,application/json">
+            </label>
+            <button id="loadDemo" type="button" role="menuitem">示例数据</button>
+            <hr>
+            <button id="exportPng" type="button" role="menuitem">导出 PNG</button>
             <button id="exportTransparentPng" type="button" role="menuitem">导出透明 PNG</button>
+            <button id="exportSvg" type="button" role="menuitem">导出 SVG</button>
+            <label class="toolbar-menu-check" title="导出时在图表下方附加偏差概要">
+              <input id="exportDeviationSummary" type="checkbox">
+              <span>导出偏差概要</span>
+            </label>
           </div>
         </div>
-        <button id="exportSvg" type="button">导出 SVG</button>
-        <label class="toolbar-check" title="导出时在图表下方附加偏差概要">
-          <input id="exportDeviationSummary" type="checkbox">
-          <span>导出偏差概要</span>
-        </label>
       </div>
     </header>
 
