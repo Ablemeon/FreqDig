@@ -1,7 +1,7 @@
 {
   "name": "freqdig",
   "version": "0.0.1",
-  "description": "FreqDig frequency response analysis tool.",
+  "description": "FreqDig open-source frequency response, distortion, and group delay analysis tool.",
   "private": true,
   "author": "Diggercat",
   "license": "MIT",

@@ -24,6 +24,7 @@ The format loosely follows Keep a Changelog. Versions should be moved from `Unre
 
 ### Changed
 
+- Limited the open-source edition UI and import/project flow to frequency response, distortion, and group delay analysis.
 - Frequency-response curve rendering now uses a hybrid path: WebGL2 for dense curve strokes, Canvas2D for axes, text, tooltips, legend, and export composition.
 - Octave smoothing now uses log-frequency weighted smoothing to reduce narrow-window jagged artifacts.
 - Relative waterfall data now keeps decay down to `-80 dB`, with a wider default dynamic range.

@@ -22,9 +22,6 @@ import {
   wrapPhaseDegrees
 } from "./src/audioMath.js";
 import { getGroupDelaySummaryItems, makeGroupDelaySeries } from "./src/groupDelay.js";
-import { buildImpulseDisplayData, getImpulseSummaryItems, parseRewImpulseResponse } from "./src/impulseAnalysis.js";
-import { buildWaterfallData, getWaterfallSummaryItems } from "./src/waterfall.js";
-import { Waterfall3DRenderer, getEffectiveWaterfallTimeMs, getWaterfallDbRangeLimit, getWaterfallRenderSettings, projectWaterfallPoint, waterfallDbFromLevelRatio, waterfallLevelRatio, waterfallPositionFromRatios, waterfallTimeRatio } from "./src/waterfall3d.js";
 import { FrequencyWebGLRenderer } from "./src/frequencyWebgl.js";
 import { cleanupCatAvatarEasterEgg, setupCatAvatarEasterEgg } from "./src/easterEgg.js";
 import {
@@ -63,6 +60,8 @@ import { installNightModeScene } from "./src/nightMode.js";
 import { createThemeController } from "./src/themeController.js";
 import { DEFAULT_USER_SETTINGS, clampProbability, loadUserSettings, normalizeTheme, saveUserSettings } from "./src/userSettings.js";
 import { getDemoCurves, getDemoTarget } from "./examples/demoData.js";
+
+const AVAILABLE_ANALYSIS_VIEWS = ["frequency", "distortion", "groupDelay"];
 
 installLiquidGlassFilter();
 const nightModeSceneReady = installNightModeScene();
@@ -114,6 +113,10 @@ function makeDefaultWaterfallView() {
     dbRange: 70,
     renderMode: "relative",
     surfaceMode: "slice",
+    sliceNormalizeMode: "off",
+    timeSampling: "frontDense",
+    showSliceCurves: true,
+    showWaterfallTooltips: true,
     sliceCount: 101,
     timeScale: 1,
     zoom: 1,
@@ -128,29 +131,62 @@ function makeDefaultImpulseView() {
   return {
     beforeMs: 5,
     afterMs: 120,
-    normalize: false
+    normalize: false,
+    displayMode: "ir",
+    analysisStartMs: 0,
+    analysisEndMs: 120,
+    showImpulse: true,
+    showEtc: false,
+    showWindow: false,
+    showMarkers: true
   };
 }
 
 function normalizeImpulseView(view = {}) {
   const defaults = makeDefaultImpulseView();
   const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const beforeMs = clamp(finiteOr(view.beforeMs, defaults.beforeMs), 1, 50);
+  const afterMs = clamp(finiteOr(view.afterMs, defaults.afterMs), 20, 500);
+  let analysisStartMs = clamp(finiteOr(view.analysisStartMs, defaults.analysisStartMs), -beforeMs, afterMs - 1);
+  let analysisEndMs = clamp(finiteOr(view.analysisEndMs, defaults.analysisEndMs), analysisStartMs + 1, afterMs);
+  if (analysisEndMs <= analysisStartMs) {
+    analysisEndMs = clamp(analysisStartMs + 1, -beforeMs + 1, afterMs);
+    analysisStartMs = clamp(analysisStartMs, -beforeMs, analysisEndMs - 1);
+  }
+
   return {
-    beforeMs: clamp(finiteOr(view.beforeMs, defaults.beforeMs), 1, 50),
-    afterMs: clamp(finiteOr(view.afterMs, defaults.afterMs), 20, 500),
-    normalize: Boolean(view.normalize)
+    beforeMs,
+    afterMs,
+    normalize: Boolean(view.normalize),
+    displayMode: view.displayMode === "spl" ? "spl" : "ir",
+    analysisStartMs,
+    analysisEndMs,
+    showImpulse: view.showImpulse === false ? false : true,
+    showEtc: Boolean(view.showEtc),
+    showWindow: Boolean(view.showWindow),
+    showMarkers: view.showMarkers === false ? false : true
   };
 }
 
 function normalizeWaterfallView(view = {}) {
   const defaults = makeDefaultWaterfallView();
   const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const sliceNormalizeMode = ["off", "peak", "frequency", "band", "reference"].includes(view.sliceNormalizeMode)
+    ? view.sliceNormalizeMode
+    : defaults.sliceNormalizeMode;
+  const timeSampling = ["frontDense", "linear"].includes(view.timeSampling)
+    ? view.timeSampling
+    : defaults.timeSampling;
   return {
     yaw: clamp(finiteOr(view.yaw, defaults.yaw), -180, 180),
     pitch: clamp(finiteOr(view.pitch, defaults.pitch), 0, 89),
     dbRange: clamp(Math.round(finiteOr(view.dbRange, defaults.dbRange)), 18, 110),
     renderMode: view.renderMode === "rew" ? "rew" : "relative",
     surfaceMode: view.surfaceMode === "grid" ? "grid" : "slice",
+    sliceNormalizeMode,
+    timeSampling,
+    showSliceCurves: view.showSliceCurves === false ? false : true,
+    showWaterfallTooltips: view.showWaterfallTooltips === false ? false : true,
     sliceCount: clamp(Math.round(finiteOr(view.sliceCount, defaults.sliceCount)), 20, 501),
     timeScale: clamp(finiteOr(view.timeScale, defaults.timeScale), 0.55, 1.7),
     zoom: clamp(finiteOr(view.zoom, defaults.zoom), 0.65, 2.2),
@@ -295,6 +331,9 @@ let themeController = null;
 let waterfallRenderer = null;
 let frequencyRenderer = null;
 let waterfallDragState = null;
+let hoveredWaterfallImpulseId = null;
+let waterfallSlicePanelBounds = null;
+let waterfallColorDrawTimer = null;
 
 // --- Chart constants ---
 const MIN_FREQ = 20;
@@ -521,18 +560,19 @@ function cropToDefaultFrequencyRange(data) {
 }
 
 function getWaterfallCacheKey() {
-  // The waterfall cache depends on both algorithm and generated frame count.
+  // The waterfall cache depends on algorithm, generated frame count, and time sampling.
   const mode = state.waterfallView.renderMode === "rew" ? "rew" : "relative";
   const frameCount = clamp(Math.round(Number(state.waterfallView.sliceCount) || 101), 20, 501);
-  return `${mode}|${frameCount}`;
+  const timeSampling = state.waterfallView.timeSampling === "linear" ? "linear" : "frontDense";
+  return `${mode}|${frameCount}|${timeSampling}`;
 }
 
 function getWaterfallForImpulse(impulse) {
   // Lazily rebuild the expensive STFT waterfall data when relevant view settings change.
   const cacheKey = getWaterfallCacheKey();
   if (!impulse.waterfallCache || impulse.waterfallCacheKey !== cacheKey) {
-    const [mode, frameCount] = cacheKey.split("|");
-    impulse.waterfallCache = buildWaterfallData(impulse, { mode, frameCount: Number(frameCount) });
+    const [mode, frameCount, timeSampling] = cacheKey.split("|");
+    impulse.waterfallCache = buildWaterfallData(impulse, { mode, frameCount: Number(frameCount), timeSampling });
     impulse.waterfallCacheKey = cacheKey;
   }
   return impulse.waterfallCache;
@@ -732,7 +772,6 @@ function targetAlignmentData(target) {
 async function readFiles(files, isTarget = false) {
   const mdatFiles = [];
   const emptyFiles = [];
-  let importedImpulse = false;
 
   for (const file of files) {
     if (isMdatFile(file)) {
@@ -741,16 +780,6 @@ async function readFiles(files, isTarget = false) {
     }
 
     const text = await file.text();
-    const impulse = parseRewImpulseResponse(text);
-    if (impulse && !isTarget) {
-      state.impulseResponses = [makeImpulseMeasurement(file.name, impulse)];
-      state.distortionMode = false;
-      if (state.analysisMode !== "impulse" && state.analysisMode !== "waterfall") state.analysisMode = "impulse";
-      waterfallRenderer?.clear();
-      importedImpulse = true;
-      continue;
-    }
-
     const distortion = parseRewDistortion(text);
     if (distortion && !isTarget) {
       const measurement = makeDistortionMeasurement(file.name, distortion);
@@ -797,12 +826,6 @@ async function readFiles(files, isTarget = false) {
   }
 
   render();
-  if (importedImpulse) {
-    requestAnimationFrame(() => {
-      drawChart();
-      requestAnimationFrame(drawChart);
-    });
-  }
 }
 
 function importDroppedCurveFiles(fileList) {
@@ -1175,18 +1198,27 @@ function drawImpulseChart() {
     return;
   }
 
+  const impulseView = normalizeImpulseView(state.impulseView);
+  if (!impulseView.showImpulse && !impulseView.showEtc) impulseView.showImpulse = true;
+  state.impulseView = impulseView;
   const pad = { left: 62, right: 24, top: 28, bottom: 46 };
   const plotW = width - pad.left - pad.right;
-  const plotH = height - pad.top - pad.bottom;
-  const impulseView = normalizeImpulseView(state.impulseView);
-  state.impulseView = impulseView;
+  const etcGap = impulseView.showEtc && impulseView.showImpulse ? 24 : 0;
+  const etcPlotH = impulseView.showEtc ? Math.max(82, Math.round((height - pad.top - pad.bottom) * (impulseView.showImpulse ? 0.28 : 1))) : 0;
+  const impulsePlotH = impulseView.showImpulse
+    ? Math.max(120, height - pad.top - pad.bottom - etcPlotH - etcGap)
+    : 0;
+  const plotH = impulseView.showImpulse ? impulsePlotH : etcPlotH;
   const series = impulses.map((impulse) => ({
     ...impulse,
     data: buildImpulseDisplayData(impulse, impulseView),
+    splData: impulseView.displayMode === "spl" ? buildImpulseSplData(impulse, impulseView) : [],
+    etcData: impulseView.showEtc ? buildImpulseEtcData(impulse, impulseView) : [],
     phaseSeries: []
   }));
   const minTime = -impulseView.beforeMs;
   const maxTime = impulseView.afterMs;
+  const isSplImpulseMode = impulseView.displayMode === "spl";
   let peak = 0.001;
   for (const item of series) {
     for (const point of item.data) peak = Math.max(peak, Math.abs(point.value));
@@ -1200,26 +1232,75 @@ function drawImpulseChart() {
     peak = 1;
   }
   const x = (timeMs) => pad.left + ((timeMs - minTime) / (maxTime - minTime)) * plotW;
-  const y = (value) => pad.top + (1 - ((value + peak) / (peak * 2))) * plotH;
+  const splRange = isSplImpulseMode ? getImpulseSplRange(series) : null;
+  const y = isSplImpulseMode
+    ? (value) => pad.top + (1 - ((value - splRange.minDb) / (splRange.maxDb - splRange.minDb))) * plotH
+    : (value) => pad.top + (1 - ((value + peak) / (peak * 2))) * plotH;
+  const etcTop = pad.top + (impulseView.showImpulse ? impulsePlotH + etcGap : 0);
+  const etcFloorDb = -80;
+  const etcY = (levelDb) => etcTop + (1 - ((levelDb - etcFloorDb) / -etcFloorDb)) * etcPlotH;
 
-  chartView = { series, pad, plotW, plotH, width, height, isImpulse: true };
-  drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX: minTime, maxX: maxTime, minY: -peak, maxY: peak, xLabel: "时间 (ms)", yLabel: "IR 幅度" });
-  for (const item of series) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(pad.left, pad.top, plotW, plotH);
-    ctx.clip();
-    ctx.strokeStyle = displayCurveColor(item.color);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    item.data.forEach((point, index) => {
-      const px = x(point.timeMs);
-      const py = y(point.value);
-      if (index === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+  chartView = { series, pad, plotW, plotH, width, height, isImpulse: true, minTime, maxTime };
+  if (impulseView.showImpulse) {
+    drawLinearGrid({
+      pad,
+      plotW,
+      plotH: impulsePlotH,
+      width,
+      height,
+      x,
+      y,
+      minX: minTime,
+      maxX: maxTime,
+      minY: isSplImpulseMode ? splRange.minDb : -peak,
+      maxY: isSplImpulseMode ? splRange.maxDb : peak,
+      xLabel: impulseView.showEtc ? "" : "时间 (ms)",
+      yLabel: isSplImpulseMode ? "IR SPL (dB)" : "IR 幅度"
     });
-    ctx.stroke();
-    ctx.restore();
+    if (impulseView.showWindow) drawImpulseWindowLayer(x, pad.top, impulsePlotH, minTime, maxTime, impulseView.analysisStartMs, impulseView.analysisEndMs, "#2f6fdb");
+    if (impulseView.showMarkers) drawImpulseMarkerLayer(x, pad.top, impulsePlotH, minTime, maxTime);
+    for (const item of series) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.left, pad.top, plotW, impulsePlotH);
+      ctx.clip();
+      ctx.strokeStyle = displayCurveColor(item.color);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const drawData = isSplImpulseMode ? item.splData : item.data;
+      drawData.forEach((point, index) => {
+        const px = x(point.timeMs);
+        const py = y(isSplImpulseMode ? point.splDb : point.value);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+  if (impulseView.showEtc) {
+    drawImpulseEtcGrid({ pad, plotW, plotH: etcPlotH, top: etcTop, width, height, x, y: etcY, minX: minTime, maxX: maxTime, minY: etcFloorDb, maxY: 0, xLabel: "时间 (ms)", yLabel: "ETC (dB)" });
+    if (impulseView.showWindow) drawImpulseWindowLayer(x, etcTop, etcPlotH, minTime, maxTime, impulseView.analysisStartMs, impulseView.analysisEndMs, "#00a6a6");
+    if (impulseView.showMarkers) drawImpulseMarkerLayer(x, etcTop, etcPlotH, minTime, maxTime);
+    for (const item of series) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.left, etcTop, plotW, etcPlotH);
+      ctx.clip();
+      ctx.strokeStyle = displayCurveColor(item.color);
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([7, 4]);
+      ctx.beginPath();
+      item.etcData.forEach((point, index) => {
+        const px = x(point.timeMs);
+        const py = etcY(point.levelDb);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
   }
   drawLegend(series, pad.left + 10, pad.top + 26);
   if (bandIndicatorOverlay) bandIndicatorOverlay.hidden = true;
@@ -1242,7 +1323,7 @@ function drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX, maxX, mi
     ctx.moveTo(px, pad.top);
     ctx.lineTo(px, pad.top + plotH);
     ctx.stroke();
-    ctx.fillText(String(tick), px - 8, height - 18);
+    if (xLabel) ctx.fillText(String(tick), px - 8, height - 18);
   }
   for (let index = 0; index <= 6; index++) {
     const value = minY + ((maxY - minY) * index) / 6;
@@ -1253,7 +1334,7 @@ function drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX, maxX, mi
     ctx.stroke();
     ctx.fillText(value.toFixed(2), 16, py + 4);
   }
-  ctx.fillText(xLabel, pad.left + plotW / 2 - 28, height - 6);
+  if (xLabel) ctx.fillText(xLabel, pad.left + plotW / 2 - 28, height - 6);
   ctx.save();
   ctx.translate(16, pad.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
@@ -1265,13 +1346,112 @@ function drawLinearGrid({ pad, plotW, plotH, width, height, x, y, minX, maxX, mi
   if (bandIndicatorOverlay) bandIndicatorOverlay.hidden = true;
 }
 
+function getImpulseSplRange(series) {
+  let minDb = Infinity;
+  let maxDb = -Infinity;
+  for (const item of series) {
+    for (const point of item.splData || []) {
+      if (!Number.isFinite(point.splDb)) continue;
+      minDb = Math.min(minDb, point.splDb);
+      maxDb = Math.max(maxDb, point.splDb);
+    }
+  }
+  if (!Number.isFinite(minDb) || !Number.isFinite(maxDb)) return { minDb: -100, maxDb: 0 };
+  const paddedMin = Math.floor((minDb - 3) / 10) * 10;
+  const paddedMax = Math.ceil((maxDb + 3) / 10) * 10;
+  return {
+    minDb: paddedMin,
+    maxDb: paddedMax <= paddedMin ? paddedMin + 10 : paddedMax
+  };
+}
+
+function drawImpulseEtcGrid({ pad, plotW, plotH, top, width, height, x, y, minX, maxX, minY, maxY, xLabel, yLabel }) {
+  if (!transparentExportMode) {
+    const gradient = ctx.createLinearGradient(0, top, 0, top + plotH);
+    gradient.addColorStop(0, cssColor("--chart-bg-top", "#ffffff"));
+    gradient.addColorStop(1, cssColor("--chart-bg-bottom", "#f3f8fa"));
+    ctx.fillStyle = isDarkTheme() ? "rgba(5, 20, 47, 0.72)" : gradient;
+    ctx.fillRect(pad.left, top, plotW, plotH);
+  }
+  ctx.strokeStyle = cssColor("--chart-grid-major", "#c8d5dd");
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.font = "12px Arial";
+  for (let tick = minX; tick <= maxX + 0.001; tick += 25) {
+    const px = x(tick);
+    ctx.beginPath();
+    ctx.moveTo(px, top);
+    ctx.lineTo(px, top + plotH);
+    ctx.stroke();
+    ctx.fillText(String(tick), px - 8, height - 18);
+  }
+  for (let value = minY; value <= maxY + 0.001; value += 20) {
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(pad.left + plotW, py);
+    ctx.stroke();
+    ctx.fillText(`${value}`, 18, py + 4);
+  }
+  if (xLabel) ctx.fillText(xLabel, pad.left + plotW / 2 - 28, height - 6);
+  ctx.save();
+  ctx.translate(16, top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+  ctx.strokeStyle = cssColor("--chart-axis", "#849aa8");
+  ctx.strokeRect(pad.left, top, plotW, plotH);
+}
+
+function drawImpulseWindowLayer(x, top, plotH, minTime, maxTime, startMs, endMs, color) {
+  const fullLeft = x(minTime);
+  const fullRight = x(maxTime);
+  const left = x(clamp(startMs, minTime, maxTime));
+  const right = x(clamp(endMs, minTime, maxTime));
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = isDarkTheme() ? "rgba(3, 13, 30, 0.28)" : "rgba(255, 255, 255, 0.48)";
+  if (left > fullLeft) ctx.fillRect(fullLeft, top, left - fullLeft, plotH);
+  if (right < fullRight) ctx.fillRect(right, top, fullRight - right, plotH);
+  ctx.fillStyle = isDarkTheme() ? "rgba(80, 170, 255, 0.08)" : "rgba(47, 111, 219, 0.055)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([8, 5]);
+  ctx.fillRect(left, top, right - left, plotH);
+  ctx.strokeRect(left, top, right - left, plotH);
+  ctx.setLineDash([]);
+  ctx.fillStyle = color;
+  ctx.font = "700 11px Arial";
+  ctx.fillText("分析窗", left + 8, top + 16);
+  ctx.restore();
+}
+
+function drawImpulseMarkerLayer(x, top, plotH, minTime, maxTime) {
+  if (minTime > 0 || maxTime < 0) return;
+  const px = x(0);
+  ctx.save();
+  ctx.strokeStyle = cssColor("--chart-axis", "#849aa8");
+  ctx.fillStyle = cssColor("--ink", "#1f2933");
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(px, top);
+  ctx.lineTo(px, top + plotH);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = "700 11px Arial";
+  ctx.fillText("直达声", px + 6, top + 16);
+  ctx.restore();
+}
+
 function drawWaterfallChart() {
   // WebGL2 owns the 3D surface; the 2D canvas only draws labels and hover guides.
+  waterfallSlicePanelBounds = null;
   const { width, height } = prepareCanvas();
-  const impulse = state.impulseResponses.find((item) => item.visible !== false);
-  canvasWrap.classList.toggle("has-chart", Boolean(impulse));
+  const visibleImpulses = state.impulseResponses.filter((item) => item.visible !== false);
+  const impulse = visibleImpulses[0];
+  canvasWrap.classList.toggle("has-chart", Boolean(visibleImpulses.length));
   emptyState.textContent = "导入 REW Impulse Response 文本文件后显示三维瀑布图。";
-  emptyState.style.display = impulse ? "none" : "grid";
+  emptyState.style.display = visibleImpulses.length ? "none" : "grid";
   if (!impulse) {
     chartView = null;
     waterfallRenderer?.clear();
@@ -1284,28 +1464,38 @@ function drawWaterfallChart() {
   const pad = { left: 70, right: 58, top: 34, bottom: 58 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
+  const hasFocusedImpulse = visibleImpulses.some((item) => item.id === hoveredWaterfallImpulseId);
+  const waterfallItems = visibleImpulses.map((item) => ({
+    impulse: item,
+    waterfall: getWaterfallForImpulse(item),
+    color: item.color,
+    opacity: hasFocusedImpulse ? (item.id === hoveredWaterfallImpulseId ? 1 : 0.07) : 0.92,
+    focused: hasFocusedImpulse && item.id === hoveredWaterfallImpulseId
+  }));
+  const sharedFrequencyRange = getWaterfallSharedFrequencyRange(waterfallItems.map((item) => item.waterfall));
 
   const waterfallRenderSettings = {
     ...getWaterfallRenderSettings(waterfall, state.waterfallView),
+    ...getWaterfallHoverFocusSettings(),
     darkTheme: isDarkTheme(),
     showContours: true
   };
   state.waterfallView.dbRange = waterfallRenderSettings.dbRange;
-  chartView = { series: [{ ...impulse, data: [], phaseSeries: [] }], impulse, waterfall, waterfallRenderSettings, pad, plotW, plotH, width, height, isWaterfall: true };
+  chartView = { series: visibleImpulses.map((item) => ({ ...item, data: [], phaseSeries: [] })), impulse, waterfall, waterfallItems, waterfallRenderSettings, pad, plotW, plotH, width, height, isWaterfall: true };
   if (!waterfallRenderer) waterfallRenderer = new Waterfall3DRenderer(waterfallCanvas);
   let rendered = false;
   try {
-    rendered = waterfallRenderer.render(waterfall, waterfallRenderSettings);
+    rendered = waterfallRenderer.renderMany(waterfallItems, waterfallRenderSettings);
     if (!rendered && waterfallRenderer.reset()) {
-      rendered = waterfallRenderer.render(waterfall, waterfallRenderSettings);
+      rendered = waterfallRenderer.renderMany(waterfallItems, waterfallRenderSettings);
     }
   } catch (error) {
     console.warn("Waterfall WebGL render failed:", error);
   }
   if (!rendered) console.warn("Waterfall WebGL returned no drawable frame.");
 
-  const minFrequency = waterfall.frequencies[0] || 20;
-  const maxFrequency = waterfall.frequencies.at(-1) || 20000;
+  const minFrequency = sharedFrequencyRange.minFrequency;
+  const maxFrequency = sharedFrequencyRange.maxFrequency;
   const minLog = Math.log10(minFrequency);
   const maxLog = Math.log10(maxFrequency);
   const project = (frequencyRatio, levelRatio, frameRatio) => projectWaterfallPoint(
@@ -1320,20 +1510,72 @@ function drawWaterfallChart() {
 
 function redrawWaterfallOverlayOnly() {
   if (!chartView?.isWaterfall) return false;
+  waterfallSlicePanelBounds = null;
   const { waterfall, waterfallRenderSettings, width, height, pad, plotW, plotH } = chartView;
-  const minFrequency = waterfall.frequencies[0] || 20;
-  const maxFrequency = waterfall.frequencies.at(-1) || 20000;
+  const nextRenderSettings = {
+    ...waterfallRenderSettings,
+    ...getWaterfallHoverFocusSettings()
+  };
+  chartView.waterfallRenderSettings = nextRenderSettings;
+  try {
+    waterfallRenderer?.renderMany(chartView.waterfallItems || [{ waterfall, color: chartView.impulse?.color }], nextRenderSettings);
+  } catch (error) {
+    console.warn("Waterfall WebGL hover render failed:", error);
+  }
+  const sharedFrequencyRange = getWaterfallSharedFrequencyRange((chartView.waterfallItems || [{ waterfall }]).map((item) => item.waterfall));
+  const minFrequency = sharedFrequencyRange.minFrequency;
+  const maxFrequency = sharedFrequencyRange.maxFrequency;
   const minLog = Math.log10(minFrequency);
   const maxLog = Math.log10(maxFrequency);
   const project = (frequencyRatio, levelRatio, frameRatio) => projectWaterfallPoint(
-    waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, waterfallRenderSettings),
-    waterfallRenderSettings,
+    waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, nextRenderSettings),
+    nextRenderSettings,
     width,
     height
   );
   ctx.clearRect(0, 0, width, height);
-  drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, width, height, pad, plotW, plotH, minFrequency, maxFrequency, minLog, maxLog });
+  drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings: nextRenderSettings, width, height, pad, plotW, plotH, minFrequency, maxFrequency, minLog, maxLog });
   return true;
+}
+
+function getWaterfallHoverFocusSettings() {
+  if (hoverPoint?.kind !== "waterfall") return { focusFrameRatio: null, focusFrameWidth: 0.018 };
+  return {
+    focusFrameRatio: hoverPoint.frameRatio,
+    focusFrameWidth: getWaterfallFocusFrameWidth(hoverPoint)
+  };
+}
+
+function getWaterfallFocusFrameWidth(point) {
+  const item = chartView?.waterfallItems?.find((entry) => entry.impulse?.id === point.curve?.id)
+    || chartView?.waterfallItems?.[0];
+  const waterfall = item?.waterfall || chartView?.waterfall;
+  if (!waterfall?.frames?.length) return 0.018;
+  const settings = chartView?.waterfallRenderSettings || getWaterfallRenderSettings(waterfall, state.waterfallView);
+  const index = nearestWaterfallFrameIndex(waterfall, point.timeMs);
+  const current = waterfallTimeRatio(waterfall, waterfall.frames[index]?.timeMs ?? point.timeMs, settings);
+  const previous = index > 0 ? waterfallTimeRatio(waterfall, waterfall.frames[index - 1].timeMs, settings) : null;
+  const next = index < waterfall.frames.length - 1 ? waterfallTimeRatio(waterfall, waterfall.frames[index + 1].timeMs, settings) : null;
+  const distances = [previous === null ? null : current - previous, next === null ? null : next - current]
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (!distances.length) return 0.018;
+  return clamp(Math.min(...distances) * 0.54, 0.002, 0.024);
+}
+
+function getWaterfallSharedFrequencyRange(waterfalls) {
+  let minFrequency = Infinity;
+  let maxFrequency = -Infinity;
+  for (const waterfall of waterfalls || []) {
+    const frequencies = waterfall?.frequencies || [];
+    const min = frequencies[0];
+    const max = frequencies.at(-1);
+    if (Number.isFinite(min) && min > 0) minFrequency = Math.min(minFrequency, min);
+    if (Number.isFinite(max) && max > 0) maxFrequency = Math.max(maxFrequency, max);
+  }
+  return {
+    minFrequency: Number.isFinite(minFrequency) ? minFrequency : 20,
+    maxFrequency: Number.isFinite(maxFrequency) ? maxFrequency : 20000
+  };
 }
 
 function drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, width, height, pad, plotW, minFrequency, maxFrequency, minLog, maxLog }) {
@@ -1345,7 +1587,42 @@ function drawWaterfallOverlay({ project, waterfall, waterfallRenderSettings, wid
   ctx.fillText("频率 Hz / 时间 ms / 幅度 dB", pad.left + plotW / 2 - 78, height - 10);
   ctx.fillText(`动态范围 ${waterfallRenderSettings.dbRange} dB`, pad.left + plotW - 116, pad.top + 18);
   ctx.fillText("左键旋转 / 中键平移 / 右键调轴", pad.left + 16, pad.top + 18);
+  drawWaterfall3dLegend(pad.left + 16, pad.top + 38);
   if (hoverPoint?.kind === "waterfall") drawWaterfallHoverGuide(hoverPoint);
+}
+
+function drawWaterfall3dLegend(x, y) {
+  const items = chartView?.waterfallItems || [];
+  if (items.length <= 1) return;
+  ctx.save();
+  ctx.font = "11px Arial";
+  items.slice(0, 6).forEach((item, index) => {
+    const top = y + index * 15;
+    ctx.fillStyle = displayCurveColor(item.impulse.color);
+    const isDimmed = item.opacity < 0.5;
+    ctx.globalAlpha = isDimmed ? 0.28 : 0.86;
+    ctx.fillRect(x, top - 8, 16, 3);
+    ctx.globalAlpha = isDimmed ? 0.34 : 0.82;
+    ctx.fillStyle = cssColor("--chart-label", "#657484");
+    ctx.font = item.impulse.id === hoveredWaterfallImpulseId ? "700 11px Arial" : "11px Arial";
+    ctx.fillText((item.impulse.name || "IR").slice(0, 20), x + 22, top - 4);
+  });
+  ctx.restore();
+}
+
+function scheduleWaterfallColorDraw(immediate = false) {
+  if (waterfallColorDrawTimer) {
+    clearTimeout(waterfallColorDrawTimer);
+    waterfallColorDrawTimer = null;
+  }
+  if (immediate) {
+    drawChart();
+    return;
+  }
+  waterfallColorDrawTimer = setTimeout(() => {
+    waterfallColorDrawTimer = null;
+    drawChart();
+  }, 90);
 }
 
 function drawWaterfallWorldAxes({ project, waterfall, width, height, minFrequency, maxFrequency, minLog, maxLog }) {
@@ -1426,62 +1703,357 @@ function drawWaterfallHoverGuide(point) {
     ctx.fill();
   }
   ctx.restore();
+
+  if (state.waterfallView.surfaceMode === "slice" && state.waterfallView.showSliceCurves !== false) {
+    drawWaterfallSliceAnalysisPanel(point);
+  }
 }
 
 function drawWaterfallHoverCrossSections(point, settings, project) {
-  const { waterfall } = chartView;
-  if (!waterfall?.frames?.length || !waterfall?.frequencies?.length) return;
-  const frameIndex = nearestWaterfallFrameIndex(waterfall, point.timeMs);
-  const binIndex = nearestWaterfallFrequencyIndex(waterfall, point.frequency);
-  const frame = waterfall.frames[frameIndex];
-  if (!frame) return;
+  if (state.waterfallView.showSliceCurves === false) return;
+  const items = chartView.waterfallItems?.length
+    ? chartView.waterfallItems
+    : [{ waterfall: chartView.waterfall, impulse: chartView.impulse, color: chartView.impulse?.color, opacity: 1 }];
+  if (!items.length) return;
 
   ctx.save();
-  ctx.lineWidth = 3.2;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-  ctx.strokeStyle = "rgba(246, 248, 248, 0.92)";
   ctx.shadowColor = "rgba(20, 26, 32, 0.32)";
   ctx.shadowBlur = 4;
 
-  ctx.beginPath();
-  let started = false;
-  const minLog = Math.log10(waterfall.frequencies[0]);
-  const maxLog = Math.log10(waterfall.frequencies.at(-1));
-  const binStep = Math.max(1, Math.floor(waterfall.frequencies.length / 180));
-  for (let index = 0; index < waterfall.frequencies.length; index += binStep) {
-    const frequencyRatio = (Math.log10(waterfall.frequencies[index]) - minLog) / (maxLog - minLog);
-    const levelRatio = waterfallLevelRatio(waterfall, frame.values[index], settings.dbRange);
-    const projected = project(frequencyRatio, levelRatio + 0.014, point.frameRatio);
-    if (!projected) continue;
-    if (!started) {
-      ctx.moveTo(projected.x, projected.y);
-      started = true;
-    } else {
-      ctx.lineTo(projected.x, projected.y);
+  const sharedFrequencyRange = getWaterfallSharedFrequencyRange(items.map((item) => item.waterfall));
+  const minLog = Math.log10(sharedFrequencyRange.minFrequency);
+  const maxLog = Math.log10(sharedFrequencyRange.maxFrequency);
+  const focusId = point.curve?.id;
+
+  items.forEach((item) => {
+    const waterfall = item.waterfall;
+    if (!waterfall?.frames?.length || !waterfall?.frequencies?.length) return;
+    const frameIndex = nearestWaterfallFrameIndex(waterfall, point.timeMs);
+    const frame = waterfall.frames[frameIndex];
+    if (!frame) return;
+
+    ctx.beginPath();
+    let started = false;
+    const binStep = Math.max(1, Math.floor(waterfall.frequencies.length / 180));
+    for (let index = 0; index < waterfall.frequencies.length; index += binStep) {
+      const frequencyRatio = (Math.log10(waterfall.frequencies[index]) - minLog) / (maxLog - minLog);
+      const levelRatio = waterfallLevelRatio(waterfall, frame.values[index], settings.dbRange);
+      const projected = project(frequencyRatio, levelRatio + 0.014, waterfallTimeRatio(waterfall, frame.timeMs, settings));
+      if (!projected) continue;
+      if (!started) {
+        ctx.moveTo(projected.x, projected.y);
+        started = true;
+      } else {
+        ctx.lineTo(projected.x, projected.y);
+      }
+    }
+    const isFocused = item.impulse?.id === focusId;
+    ctx.strokeStyle = displayCurveColor(item.impulse?.color || item.color || "#1596bd");
+    ctx.globalAlpha = isFocused ? 0.98 : 0.62;
+    ctx.lineWidth = isFocused ? 4.4 : 2.7;
+    ctx.stroke();
+  });
+
+  const focusedItem = items.find((item) => item.impulse?.id === focusId) || items[0];
+  const waterfall = focusedItem?.waterfall;
+  if (waterfall?.frames?.length && waterfall?.frequencies?.length) {
+    const binIndex = nearestWaterfallFrequencyIndex(waterfall, point.frequency);
+    ctx.beginPath();
+    let started = false;
+    const frameStep = Math.max(1, Math.floor(waterfall.frames.length / 180));
+    for (let index = 0; index < waterfall.frames.length; index += frameStep) {
+      const slice = waterfall.frames[index];
+      if (slice.timeMs > settings.effectiveMaxTimeMs) continue;
+      const frameRatio = waterfallTimeRatio(waterfall, slice.timeMs, settings);
+      const levelRatio = waterfallLevelRatio(waterfall, slice.values[binIndex], settings.dbRange);
+      const projected = project(point.frequencyRatio, levelRatio + 0.014, frameRatio);
+      if (!projected) continue;
+      if (!started) {
+        ctx.moveTo(projected.x, projected.y);
+        started = true;
+      } else {
+        ctx.lineTo(projected.x, projected.y);
+      }
+    }
+    ctx.strokeStyle = "rgba(246, 248, 248, 0.86)";
+    ctx.globalAlpha = 0.92;
+    ctx.lineWidth = 3.2;
+    ctx.stroke();
+  }
+  ctx.restore();
+
+}
+
+function drawWaterfallSliceAnalysisPanel(point) {
+  const visibleImpulses = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+  if (!visibleImpulses.length) return;
+
+  const settings = chartView.waterfallRenderSettings || getWaterfallRenderSettings(chartView.waterfall, state.waterfallView);
+  const mode = getWaterfallSliceNormalizeMode();
+  const slices = visibleImpulses
+    .map((impulse) => {
+      const waterfall = getWaterfallForImpulse(impulse);
+      const frame = waterfall.frames[nearestWaterfallFrameIndex(waterfall, point.timeMs)];
+      if (!frame) return null;
+      return buildWaterfallSliceCurve(impulse, waterfall, frame, point.frequency, mode);
+    })
+    .filter(Boolean);
+  if (!slices.length) return;
+
+  const reference = mode === "reference" ? slices[0] : null;
+  if (reference) {
+    for (const slice of slices) {
+      slice.values = slice.values.map((value, index) => {
+        const referenceValue = getWaterfallSliceValueAtFrequency(reference.frequencies, reference.values, slice.frequencies[index]);
+        return value - referenceValue;
+      });
+      slice.offsetLabel = slice === reference ? "参考" : "相对参考";
     }
   }
+
+  const minFrequency = slices[0].frequencies[0] || 20;
+  const maxFrequency = slices[0].frequencies.at(-1) || 20000;
+  const minLog = Math.log10(minFrequency);
+  const maxLog = Math.log10(maxFrequency);
+  let minDb = Infinity;
+  let maxDb = -Infinity;
+  for (const slice of slices) {
+    for (const value of slice.values) {
+      if (!Number.isFinite(value)) continue;
+      minDb = Math.min(minDb, value);
+      maxDb = Math.max(maxDb, value);
+    }
+  }
+  if (!Number.isFinite(minDb) || !Number.isFinite(maxDb)) return;
+  if (mode !== "off" && mode !== "reference") maxDb = Math.max(0, maxDb);
+  if (mode === "reference") {
+    minDb = Math.min(-12, minDb);
+    maxDb = Math.max(12, maxDb);
+  } else {
+    const dynamicFloor = chartView.waterfall?.scale === "absolute"
+      ? (Number(chartView.waterfall.maxDb) || 0) - settings.dbRange
+      : -settings.dbRange;
+    minDb = Math.max(Math.floor(minDb - 3), dynamicFloor);
+    maxDb = Math.ceil(maxDb + 3);
+  }
+  if (maxDb - minDb < 12) {
+    const center = (minDb + maxDb) / 2;
+    minDb = center - 6;
+    maxDb = center + 6;
+  }
+
+  const panelW = clamp(Math.round(chartView.width * 0.38), 300, 460);
+  const panelH = clamp(Math.round(chartView.height * 0.30), 190, 270);
+  const panelBounds = getWaterfallSlicePanelBounds(point, panelW, panelH);
+  const panelX = panelBounds.x;
+  const panelY = panelBounds.y;
+  waterfallSlicePanelBounds = panelBounds;
+  const pad = { left: 44, right: 14, top: 30, bottom: 30 };
+  const plotX = panelX + pad.left;
+  const plotY = panelY + pad.top;
+  const plotW = panelW - pad.left - pad.right;
+  const plotH = panelH - pad.top - pad.bottom;
+  const x = (frequency) => plotX + ((Math.log10(frequency) - minLog) / (maxLog - minLog)) * plotW;
+  const y = (level) => plotY + (1 - ((level - minDb) / (maxDb - minDb))) * plotH;
+
+  ctx.save();
+  ctx.shadowColor = isDarkTheme() ? "rgba(0, 0, 0, 0.38)" : "rgba(31, 41, 51, 0.16)";
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = isDarkTheme() ? "rgba(7, 24, 48, 0.88)" : "rgba(255, 255, 255, 0.92)";
+  ctx.strokeStyle = cssColor("--line", "rgba(132, 154, 168, 0.34)");
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(panelX, panelY, panelW, panelH, 8);
+  ctx.fill();
+  ctx.shadowBlur = 0;
   ctx.stroke();
 
-  ctx.beginPath();
-  started = false;
-  const frameStep = Math.max(1, Math.floor(waterfall.frames.length / 180));
-  for (let index = 0; index < waterfall.frames.length; index += frameStep) {
-    const slice = waterfall.frames[index];
-    if (slice.timeMs > settings.effectiveMaxTimeMs) continue;
-    const frameRatio = waterfallTimeRatio(waterfall, slice.timeMs, settings);
-    const levelRatio = waterfallLevelRatio(waterfall, slice.values[binIndex], settings.dbRange);
-    const projected = project(point.frequencyRatio, levelRatio + 0.014, frameRatio);
-    if (!projected) continue;
-    if (!started) {
-      ctx.moveTo(projected.x, projected.y);
-      started = true;
-    } else {
-      ctx.lineTo(projected.x, projected.y);
-    }
+  ctx.fillStyle = cssColor("--ink", "#1f2933");
+  ctx.font = "700 12px Arial";
+  ctx.fillText(`切片曲线 ${point.timeMs.toFixed(1)} ms`, panelX + 12, panelY + 18);
+  ctx.fillStyle = cssColor("--muted", "#657484");
+  ctx.font = "11px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(getWaterfallSliceNormalizeLabel(mode), panelX + panelW - 12, panelY + 18);
+  ctx.textAlign = "left";
+
+  ctx.strokeStyle = cssColor("--chart-grid-minor", "rgba(132, 154, 168, 0.22)");
+  ctx.fillStyle = cssColor("--chart-label", "#657484");
+  ctx.font = "10px Arial";
+  for (const freq of getMajorFrequencyTicks(minFrequency, maxFrequency)) {
+    const px = x(freq);
+    ctx.beginPath();
+    ctx.moveTo(px, plotY);
+    ctx.lineTo(px, plotY + plotH);
+    ctx.stroke();
+    ctx.fillText(formatFrequencyTick(freq), px - 10, panelY + panelH - 10);
   }
-  ctx.stroke();
+  const dbStep = niceDbStep((maxDb - minDb) / 5);
+  for (let db = Math.ceil(minDb / dbStep) * dbStep; db <= maxDb; db += dbStep) {
+    const py = y(db);
+    ctx.beginPath();
+    ctx.moveTo(plotX, py);
+    ctx.lineTo(plotX + plotW, py);
+    ctx.stroke();
+    ctx.fillText(String(db), panelX + 10, py + 3);
+  }
+  if (minDb < 0 && maxDb > 0) {
+    ctx.strokeStyle = cssColor("--chart-zero", "rgba(31, 41, 51, 0.54)");
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(plotX, y(0));
+    ctx.lineTo(plotX + plotW, y(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.beginPath();
+  ctx.rect(plotX, plotY, plotW, plotH);
+  ctx.clip();
+  slices.forEach((slice, sliceIndex) => {
+    ctx.strokeStyle = displayCurveColor(slice.color);
+    ctx.globalAlpha = sliceIndex === 0 || slices.length === 1 ? 0.96 : 0.72;
+    ctx.lineWidth = sliceIndex === 0 ? 2.2 : 1.8;
+    ctx.beginPath();
+    let started = false;
+    const step = Math.max(1, Math.floor(slice.frequencies.length / 220));
+    for (let index = 0; index < slice.frequencies.length; index += step) {
+      const value = slice.values[index];
+      if (!Number.isFinite(value)) continue;
+      const px = x(slice.frequencies[index]);
+      const py = y(value);
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+  });
   ctx.restore();
+
+  ctx.save();
+  ctx.font = "10px Arial";
+  let legendY = panelY + 34;
+  for (const slice of slices.slice(0, 5)) {
+    ctx.fillStyle = displayCurveColor(slice.color);
+    ctx.fillRect(panelX + panelW - 112, legendY - 8, 10, 3);
+    ctx.fillStyle = cssColor("--ink", "#1f2933");
+    ctx.fillText(slice.name.slice(0, 15), panelX + panelW - 96, legendY - 4);
+    legendY += 14;
+  }
+  ctx.restore();
+}
+
+function getWaterfallSlicePanelBounds(point, width, height) {
+  const margin = 18;
+  const top = chartView.pad.top + 30;
+  const bottom = chartView.height - chartView.pad.bottom - height - 10;
+  const left = chartView.pad.left + 12;
+  const right = chartView.width - width - 24;
+  const mouseX = Number.isFinite(point.screenX) ? point.screenX : chartView.width / 2;
+  const mouseY = Number.isFinite(point.screenY) ? point.screenY : chartView.height / 2;
+  const candidates = [
+    { x: mouseX < chartView.width / 2 ? right : left, y: mouseY < chartView.height / 2 ? bottom : top },
+    { x: right, y: top },
+    { x: left, y: top },
+    { x: right, y: bottom },
+    { x: left, y: bottom }
+  ].map((rect) => ({
+    x: clamp(rect.x, margin, chartView.width - width - margin),
+    y: clamp(rect.y, margin, chartView.height - height - margin),
+    width,
+    height
+  }));
+
+  const avoidPoint = { x: mouseX, y: mouseY, width: 1, height: 1 };
+  return candidates
+    .map((rect) => ({ rect, score: rectDistanceScore(rect, avoidPoint) }))
+    .sort((a, b) => b.score - a.score)[0].rect;
+}
+
+function rectDistanceScore(rect, avoidRect) {
+  const rectCenterX = rect.x + rect.width / 2;
+  const rectCenterY = rect.y + rect.height / 2;
+  const avoidCenterX = avoidRect.x + avoidRect.width / 2;
+  const avoidCenterY = avoidRect.y + avoidRect.height / 2;
+  const overlaps = rectsOverlap(rect, inflateRect(avoidRect, 24));
+  return Math.hypot(rectCenterX - avoidCenterX, rectCenterY - avoidCenterY) + (overlaps ? -10000 : 0);
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function inflateRect(rect, amount) {
+  return {
+    x: rect.x - amount,
+    y: rect.y - amount,
+    width: rect.width + amount * 2,
+    height: rect.height + amount * 2
+  };
+}
+
+function getWaterfallSliceNormalizeMode() {
+  return ["off", "peak", "frequency", "band", "reference"].includes(state.waterfallView.sliceNormalizeMode)
+    ? state.waterfallView.sliceNormalizeMode
+    : "off";
+}
+
+function getWaterfallSliceNormalizeLabel(mode) {
+  return {
+    off: "原始 dB",
+    peak: "峰值归一到 0 dB",
+    frequency: "当前频点归一",
+    band: "500 Hz - 2 kHz 平均",
+    reference: "相对第一条 IR"
+  }[mode] || "原始 dB";
+}
+
+function getWaterfallSliceNormalizeShortLabel(mode) {
+  return {
+    off: "原始",
+    peak: "峰值",
+    frequency: "频点",
+    band: "频段",
+    reference: "参考"
+  }[mode] || "原始";
+}
+
+function getWaterfallTimeSamplingShortLabel(mode) {
+  return mode === "linear" ? "均匀" : "前密";
+}
+
+function buildWaterfallSliceCurve(impulse, waterfall, frame, hoverFrequency, mode) {
+  const frequencies = waterfall.frequencies || [];
+  const rawValues = Array.from(frame.values || []);
+  let offset = 0;
+  if (mode === "peak") {
+    const finiteValues = rawValues.filter(Number.isFinite);
+    offset = finiteValues.length ? -Math.max(...finiteValues) : 0;
+  } else if (mode === "frequency") {
+    offset = -getWaterfallSliceValueAtFrequency(frequencies, rawValues, hoverFrequency);
+  } else if (mode === "band") {
+    const bandValues = rawValues.filter((value, index) => frequencies[index] >= 500 && frequencies[index] <= 2000 && Number.isFinite(value));
+    offset = bandValues.length ? -(bandValues.reduce((sum, value) => sum + value, 0) / bandValues.length) : 0;
+  }
+
+  return {
+    name: impulse.name || impulse.fileName || "IR",
+    color: impulse.color,
+    frequencies,
+    values: rawValues.map((value) => Number.isFinite(value) ? value + offset : value),
+    offsetLabel: offset ? `${offset.toFixed(1)} dB` : ""
+  };
+}
+
+function getWaterfallSliceValueAtFrequency(frequencies, values, frequency) {
+  if (!frequencies.length || !values.length) return 0;
+  const data = frequencies.map((item, index) => ({ frequency: item, level: values[index] }));
+  return interpolate(data, frequency) ?? values[nearestWaterfallFrequencyIndex({ frequencies }, frequency)] ?? 0;
 }
 
 function nearestWaterfallFrameIndex(waterfall, timeMs) {
@@ -2507,17 +3079,27 @@ function updateTooltip(point, mouseX, mouseY) {
 }
 
 function updateWaterfallTooltip(point, mouseX, mouseY) {
+  const rows = (point.readings || []).map((reading) => `
+    <div class="tooltip-series${reading.curve.id === point.curve.id ? " is-active" : ""}">
+      <span class="tooltip-swatch" style="background:${displayCurveColor(reading.curve.color)}"></span>
+      <span class="tooltip-series-name">${escapeHtml(reading.curve.name)}</span>
+      <strong>${reading.level.toFixed(1)} dB</strong>
+    </div>
+  `).join("");
+
   chartTooltip.innerHTML = `
     <div class="tooltip-name" style="color:#1596bd">${escapeHtml(point.curve.name)}</div>
     <div class="tooltip-row"><span>频率轴</span><strong>${formatFrequency(point.frequency)}</strong></div>
     <div class="tooltip-row"><span>时间轴</span><strong>${point.timeMs.toFixed(1)} ms</strong></div>
     <div class="tooltip-row"><span>幅度轴</span><strong>${point.level.toFixed(1)} dB</strong></div>
     <div class="tooltip-readings">
-      <div class="tooltip-series is-active">
-        <span class="tooltip-swatch" style="background:hsl(${Math.round(200 - point.levelRatio * 150)} 72% 48%)"></span>
-        <span class="tooltip-series-name">三维采样点</span>
-        <strong>${point.levelRatioPercent.toFixed(0)}%</strong>
-      </div>
+      ${rows || `
+        <div class="tooltip-series is-active">
+          <span class="tooltip-swatch" style="background:hsl(${Math.round(200 - point.levelRatio * 150)} 72% 48%)"></span>
+          <span class="tooltip-series-name">三维采样点</span>
+          <strong>${point.levelRatioPercent.toFixed(0)}%</strong>
+        </div>
+      `}
     </div>
   `;
 
@@ -2532,13 +3114,54 @@ function updateWaterfallTooltip(point, mouseX, mouseY) {
   let top = mouseY + margin;
   if (left + tooltipRect.width > wrap.width) left = mouseX - tooltipRect.width - margin;
   if (top + tooltipRect.height > wrap.height) top = mouseY - tooltipRect.height - margin;
-  left = Math.max(8, left);
-  top = Math.max(8, top);
+  ({ left, top } = avoidWaterfallSlicePanel({
+    left,
+    top,
+    width: tooltipRect.width,
+    height: tooltipRect.height,
+    mouseX,
+    mouseY,
+    wrapWidth: wrap.width,
+    wrapHeight: wrap.height,
+    margin
+  }));
   tooltipPosition = tooltipPosition || { x: left, y: top };
   tooltipPosition.x = lerp(tooltipPosition.x, left, TOOLTIP_FOLLOW_EASING);
   tooltipPosition.y = lerp(tooltipPosition.y, top, TOOLTIP_FOLLOW_EASING);
   chartTooltip.style.left = `${tooltipPosition.x}px`;
   chartTooltip.style.top = `${tooltipPosition.y}px`;
+}
+
+function avoidWaterfallSlicePanel({ left, top, width, height, mouseX, mouseY, wrapWidth, wrapHeight, margin }) {
+  const base = clampTooltipRect({ left, top, width, height, wrapWidth, wrapHeight });
+  const panel = waterfallSlicePanelBounds;
+  if (!panel || !rectsOverlap({ x: base.left, y: base.top, width, height }, inflateRect(panel, 10))) return base;
+
+  const candidates = [
+    { left: mouseX + margin, top: mouseY + margin },
+    { left: mouseX - width - margin, top: mouseY + margin },
+    { left: mouseX + margin, top: mouseY - height - margin },
+    { left: mouseX - width - margin, top: mouseY - height - margin },
+    { left: panel.x - width - margin, top: panel.y },
+    { left: panel.x + panel.width + margin, top: panel.y },
+    { left: panel.x, top: panel.y - height - margin },
+    { left: panel.x, top: panel.y + panel.height + margin }
+  ].map((candidate) => clampTooltipRect({ ...candidate, width, height, wrapWidth, wrapHeight }));
+
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      overlaps: rectsOverlap({ x: candidate.left, y: candidate.top, width, height }, inflateRect(panel, 10)),
+      distance: Math.hypot(candidate.left - mouseX, candidate.top - mouseY)
+    }))
+    .sort((a, b) => Number(a.overlaps) - Number(b.overlaps) || a.distance - b.distance)[0].candidate;
+}
+
+function clampTooltipRect({ left, top, width, height, wrapWidth, wrapHeight }) {
+  return {
+    left: clamp(left, 8, Math.max(8, wrapWidth - width - 8)),
+    top: clamp(top, 8, Math.max(8, wrapHeight - height - 8))
+  };
 }
 
 function formatTooltipLevel(value) {
@@ -2614,7 +3237,13 @@ function handleScheduledChartHover() {
   }
 
   setHoverPoint(nearest);
-  updateTooltip(nearest, mouseX, mouseY);
+  if (chartView?.isWaterfall && state.waterfallView.showWaterfallTooltips === false) {
+    chartTooltip.classList.remove("is-visible");
+    chartTooltip.hidden = true;
+    tooltipPosition = null;
+  } else {
+    updateTooltip(nearest, mouseX, mouseY);
+  }
 
   if (previousKey === hoverKey(nearest) && previousFrequency === nearest.frequency) return;
   if (previousKey !== hoverKey(nearest)) return;
@@ -3320,56 +3949,94 @@ function hydrateCurve(curve, fallbackName) {
 
 function findNearestWaterfallPoint(mouseX, mouseY) {
   const { waterfall, impulse, width, height, pad, plotW, plotH } = chartView;
-  if (!waterfall || !impulse) return null;
+  const waterfallItems = chartView.waterfallItems?.length
+    ? chartView.waterfallItems
+    : [{ waterfall, impulse }];
+  if (!waterfallItems.length) return null;
   if (mouseX < pad.left || mouseX > pad.left + plotW || mouseY < pad.top || mouseY > pad.top + plotH) return null;
 
-  const frames = waterfall.frames;
-  const frequencies = waterfall.frequencies;
-  const minLog = Math.log10(frequencies[0]);
-  const maxLog = Math.log10(frequencies[frequencies.length - 1]);
+  const sharedFrequencyRange = getWaterfallSharedFrequencyRange(waterfallItems.map((item) => item.waterfall));
+  const minLog = Math.log10(sharedFrequencyRange.minFrequency);
+  const maxLog = Math.log10(sharedFrequencyRange.maxFrequency);
   const frameStride = 1;
   const binStride = 1;
-  const settings = chartView.waterfallRenderSettings || getWaterfallRenderSettings(waterfall, state.waterfallView);
+  const settings = chartView.waterfallRenderSettings || getWaterfallRenderSettings(waterfallItems[0].waterfall, state.waterfallView);
   let nearest = null;
   const threshold = 24;
 
-  for (let frameIndex = 0; frameIndex < frames.length; frameIndex += frameStride) {
-    const frame = frames[frameIndex];
-    if (frame.timeMs > settings.effectiveMaxTimeMs) continue;
-    const frameRatio = waterfallTimeRatio(waterfall, frame.timeMs, settings);
-    for (let binIndex = 0; binIndex < frequencies.length; binIndex += binStride) {
-      const frequency = frequencies[binIndex];
-      const frequencyRatio = (Math.log10(frequency) - minLog) / (maxLog - minLog);
-      const level = frame.values[binIndex];
-      const levelRatio = waterfallLevelRatio(waterfall, level, settings.dbRange);
-      const projected = projectWaterfallPoint(
-        waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, settings),
-        settings,
-        width,
-        height
-      );
-      if (!projected) continue;
-      const distance = Math.hypot(projected.x - mouseX, projected.y - mouseY);
-      if (distance > threshold || (nearest && distance >= nearest.distance)) continue;
-      nearest = {
-        curve: impulse,
-        seriesKey: "waterfall",
-        kind: "waterfall",
-        frequency,
-        frequencyRatio,
-        frameRatio,
-        timeMs: frame.timeMs,
-        level,
-        levelRatio,
-        levelRatioPercent: levelRatio * 100,
-        screenX: projected.x,
-        screenY: projected.y,
-        distance
-      };
+  for (const item of waterfallItems) {
+    const itemWaterfall = item.waterfall;
+    const itemImpulse = item.impulse || impulse;
+    const frames = itemWaterfall.frames || [];
+    const frequencies = itemWaterfall.frequencies || [];
+    for (let frameIndex = 0; frameIndex < frames.length; frameIndex += frameStride) {
+      const frame = frames[frameIndex];
+      if (frame.timeMs > settings.effectiveMaxTimeMs) continue;
+      const frameRatio = waterfallTimeRatio(itemWaterfall, frame.timeMs, settings);
+      for (let binIndex = 0; binIndex < frequencies.length; binIndex += binStride) {
+        const frequency = frequencies[binIndex];
+        const frequencyRatio = (Math.log10(frequency) - minLog) / (maxLog - minLog);
+        const level = frame.values[binIndex];
+        const levelRatio = waterfallLevelRatio(itemWaterfall, level, settings.dbRange);
+        const projected = projectWaterfallPoint(
+          waterfallPositionFromRatios(frequencyRatio, levelRatio, frameRatio, settings),
+          settings,
+          width,
+          height
+        );
+        if (!projected) continue;
+        const distance = Math.hypot(projected.x - mouseX, projected.y - mouseY);
+        if (distance > threshold || (nearest && distance >= nearest.distance)) continue;
+        nearest = {
+          curve: itemImpulse,
+          seriesKey: "waterfall",
+          kind: "waterfall",
+          frequency,
+          frequencyRatio,
+          frameRatio,
+          timeMs: frame.timeMs,
+          level,
+          levelRatio,
+          levelRatioPercent: levelRatio * 100,
+          screenX: projected.x,
+          screenY: projected.y,
+          distance
+        };
+      }
     }
   }
 
+  if (nearest) nearest.readings = getWaterfallReadingsAtPoint(nearest, waterfallItems, settings);
   return nearest;
+}
+
+function getWaterfallReadingsAtPoint(point, waterfallItems, settings) {
+  const sharedFrequencyRange = getWaterfallSharedFrequencyRange(waterfallItems.map((item) => item.waterfall));
+  const minLog = Math.log10(sharedFrequencyRange.minFrequency);
+  const maxLog = Math.log10(sharedFrequencyRange.maxFrequency);
+  return waterfallItems
+    .map((item) => {
+      const waterfall = item.waterfall;
+      const frame = waterfall.frames?.[nearestWaterfallFrameIndex(waterfall, point.timeMs)];
+      if (!frame) return null;
+      const level = getWaterfallSliceValueAtFrequency(waterfall.frequencies || [], frame.values || [], point.frequency);
+      if (!Number.isFinite(level)) return null;
+      const frequencyRatio = (Math.log10(point.frequency) - minLog) / (maxLog - minLog);
+      const levelRatio = waterfallLevelRatio(waterfall, level, settings.dbRange);
+      return {
+        curve: item.impulse,
+        waterfall,
+        frame,
+        frequency: point.frequency,
+        frequencyRatio,
+        frameRatio: waterfallTimeRatio(waterfall, frame.timeMs, settings),
+        timeMs: frame.timeMs,
+        level,
+        levelRatio
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.level - a.level);
 }
 
 function serializeImpulse(impulse) {
@@ -3434,9 +4101,7 @@ function saveProjectFile() {
       showBandIndicator: state.showBandIndicator,
       globalSmoothing: state.globalSmoothing,
       exportDeviationSummary: state.exportDeviationSummary,
-      analysisMode: state.analysisMode,
-      impulseView: normalizeImpulseView(state.impulseView),
-      waterfallView: normalizeWaterfallView(state.waterfallView),
+      analysisMode: ["frequency", "groupDelay"].includes(state.analysisMode) ? state.analysisMode : "frequency",
       watermarkText: state.watermarkText,
       measurementModel: state.measurementModel,
       easterEggTriggerProbability: state.easterEggTriggerProbability,
@@ -3444,7 +4109,6 @@ function saveProjectFile() {
       theme: state.theme
     },
     curves: state.curves.map(serializeCurve),
-    impulseResponses: state.impulseResponses.map(serializeImpulse),
     target: state.target ? serializeCurve(state.target) : null
   };
 
@@ -3466,15 +4130,10 @@ async function loadProjectFile(file) {
   state.curves = (project.curves || [])
     .map((curve, index) => hydrateCurve(curve, `曲线 ${index + 1}`))
     .filter((curve) => curve.data.length);
-  state.impulseResponses = (project.impulseResponses || [])
-    .map((impulse, index) => hydrateImpulse(impulse, `IR ${index + 1}`))
-    .filter(Boolean)
-    .slice(0, 1);
+  state.impulseResponses = [];
   state.target = project.target ? hydrateCurve(project.target, "目标曲线") : null;
   state.mode = ["raw", "reference", "target"].includes(loadedState.mode) ? loadedState.mode : "raw";
-  state.analysisMode = ["frequency", "groupDelay", "impulse", "waterfall"].includes(loadedState.analysisMode) ? loadedState.analysisMode : "frequency";
-  state.impulseView = normalizeImpulseView(loadedState.impulseView);
-  state.waterfallView = normalizeWaterfallView(loadedState.waterfallView);
+  state.analysisMode = ["frequency", "groupDelay"].includes(loadedState.analysisMode) ? loadedState.analysisMode : "frequency";
   state.referenceId = loadedState.referenceId || state.curves[0]?.id || null;
   state.tiltDbPerOct = Number(loadedState.tiltDbPerOct) || 0;
   state.applyTiltToCurves = loadedState.applyTiltToCurves !== false;
@@ -3748,6 +4407,10 @@ function renderImpulseAnalysisControls() {
       <strong>IR 工具</strong>
       <span>${first ? `${Math.round(first.sampleRate).toLocaleString()} Hz / 峰值 ${peakMs.toFixed(2)} ms` : "等待 IR 数据"}</span>
     </div>
+    <div class="impulse-display-toggle" role="group" aria-label="IR 显示模式">
+      <button type="button" data-impulse-display="ir" class="${state.impulseView.displayMode === "spl" ? "" : "is-active"}">IR</button>
+      <button type="button" data-impulse-display="spl" class="${state.impulseView.displayMode === "spl" ? "is-active" : ""}">SPL</button>
+    </div>
     <label class="analysis-control">
       <span>峰值前</span>
       <input type="range" min="1" max="50" step="1" value="${state.impulseView.beforeMs}" data-impulse-setting="beforeMs">
@@ -3762,17 +4425,66 @@ function renderImpulseAnalysisControls() {
       <input type="checkbox" data-impulse-setting="normalize" ${state.impulseView.normalize ? "checked" : ""}>
       <span>按峰值归一化显示</span>
     </label>
+    <details class="analysis-disclosure" ${state.impulseView.showEtc || state.impulseView.showWindow ? "open" : ""}>
+      <summary>按需显示</summary>
+      <label class="analysis-check">
+        <input type="checkbox" data-impulse-setting="showImpulse" ${state.impulseView.showImpulse ? "checked" : ""}>
+        <span>原始 IR</span>
+      </label>
+      <label class="analysis-check">
+        <input type="checkbox" data-impulse-setting="showEtc" ${state.impulseView.showEtc ? "checked" : ""}>
+        <span>ETC 能量包络</span>
+      </label>
+      <label class="analysis-check">
+        <input type="checkbox" data-impulse-setting="showWindow" ${state.impulseView.showWindow ? "checked" : ""}>
+        <span>分析窗</span>
+      </label>
+      <label class="analysis-control">
+        <span>窗起点</span>
+        <input type="range" min="${-state.impulseView.beforeMs}" max="${state.impulseView.afterMs - 1}" step="1" value="${state.impulseView.analysisStartMs}" data-impulse-setting="analysisStartMs">
+        <strong>${state.impulseView.analysisStartMs.toFixed(0)} ms</strong>
+      </label>
+      <label class="analysis-control">
+        <span>窗终点</span>
+        <input type="range" min="${state.impulseView.analysisStartMs + 1}" max="${state.impulseView.afterMs}" step="1" value="${state.impulseView.analysisEndMs}" data-impulse-setting="analysisEndMs">
+        <strong>${state.impulseView.analysisEndMs.toFixed(0)} ms</strong>
+      </label>
+      <label class="analysis-check">
+        <input type="checkbox" data-impulse-setting="showMarkers" ${state.impulseView.showMarkers ? "checked" : ""}>
+        <span>直达声标记</span>
+      </label>
+    </details>
     <button type="button" class="reset-impulse-view">重置 IR 视窗</button>
   `;
+
+  panel.querySelectorAll("[data-impulse-display]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.impulseView.displayMode = button.dataset.impulseDisplay === "spl" ? "spl" : "ir";
+      renderCurveList();
+      renderTitle();
+      renderMetrics();
+      drawChart();
+    });
+  });
 
   panel.querySelectorAll("[data-impulse-setting]").forEach((input) => {
     const handleImpulseSetting = (event) => {
       const key = event.target.dataset.impulseSetting;
-      if (key === "normalize") {
-        state.impulseView.normalize = event.target.checked;
+      if (["normalize", "showImpulse", "showEtc", "showWindow", "showMarkers"].includes(key)) {
+        state.impulseView[key] = event.target.checked;
+        if (!state.impulseView.showImpulse && !state.impulseView.showEtc) {
+          const fallbackKey = key === "showImpulse" ? "showEtc" : "showImpulse";
+          state.impulseView[fallbackKey] = true;
+          const fallbackInput = panel.querySelector(`[data-impulse-setting="${fallbackKey}"]`);
+          if (fallbackInput) fallbackInput.checked = true;
+        }
       } else {
         state.impulseView[key] = Number(event.target.value);
+        if (key === "analysisStartMs" || key === "analysisEndMs") state.impulseView.showWindow = true;
+        state.impulseView = normalizeImpulseView(state.impulseView);
+        event.target.value = String(state.impulseView[key]);
         event.target.nextElementSibling.textContent = `${state.impulseView[key].toFixed(0)} ms`;
+        syncImpulseAnalysisWindowInputs(panel);
       }
       renderTitle();
       renderMetrics();
@@ -3787,6 +4499,22 @@ function renderImpulseAnalysisControls() {
   });
 
   curveList.appendChild(panel);
+}
+
+function syncImpulseAnalysisWindowInputs(panel) {
+  const startInput = panel.querySelector("[data-impulse-setting='analysisStartMs']");
+  const endInput = panel.querySelector("[data-impulse-setting='analysisEndMs']");
+  if (!startInput || !endInput) return;
+
+  startInput.min = String(-state.impulseView.beforeMs);
+  startInput.max = String(state.impulseView.afterMs - 1);
+  startInput.value = String(state.impulseView.analysisStartMs);
+  startInput.nextElementSibling.textContent = `${state.impulseView.analysisStartMs.toFixed(0)} ms`;
+
+  endInput.min = String(state.impulseView.analysisStartMs + 1);
+  endInput.max = String(state.impulseView.afterMs);
+  endInput.value = String(state.impulseView.analysisEndMs);
+  endInput.nextElementSibling.textContent = `${state.impulseView.analysisEndMs.toFixed(0)} ms`;
 }
 
 function renderImpulseControls() {
@@ -3819,11 +4547,13 @@ function renderImpulseControls() {
 
     buttons[0].addEventListener("click", () => {
       impulse.visible = !impulse.visible;
+      if (!impulse.visible && hoveredWaterfallImpulseId === impulse.id) hoveredWaterfallImpulseId = null;
       render();
     });
 
     buttons[1].addEventListener("click", () => {
       state.impulseResponses = state.impulseResponses.filter((item) => item.id !== impulse.id);
+      if (hoveredWaterfallImpulseId === impulse.id) hoveredWaterfallImpulseId = null;
       render();
     });
 
@@ -3837,6 +4567,24 @@ function renderImpulseControls() {
     colorInput.addEventListener("input", (event) => {
       impulse.color = event.target.value;
       item.querySelector(".swatch").style.background = displayCurveColor(impulse.color);
+      scheduleWaterfallColorDraw(false);
+    });
+
+    colorInput.addEventListener("change", () => {
+      scheduleWaterfallColorDraw(true);
+    });
+
+    item.addEventListener("pointerenter", () => {
+      if (state.analysisMode !== "waterfall" || impulse.visible === false) return;
+      hoveredWaterfallImpulseId = impulse.id;
+      item.classList.add("is-waterfall-focused");
+      drawChart();
+    });
+
+    item.addEventListener("pointerleave", () => {
+      if (hoveredWaterfallImpulseId !== impulse.id) return;
+      hoveredWaterfallImpulseId = null;
+      item.classList.remove("is-waterfall-focused");
       drawChart();
     });
 
@@ -3969,6 +4717,33 @@ function renderWaterfallControls() {
       </select>
       <strong>${state.waterfallView.surfaceMode === "grid" ? "网格" : "切片"}</strong>
     </div>
+    <div class="waterfall-control waterfall-control--select">
+      <label for="waterfallSliceNormalizeMode">切片分析</label>
+      <select id="waterfallSliceNormalizeMode" data-waterfall-setting="sliceNormalizeMode" aria-label="切片曲线归一化">
+        <option value="off"${state.waterfallView.sliceNormalizeMode === "off" ? " selected" : ""}>原始 dB</option>
+        <option value="peak"${state.waterfallView.sliceNormalizeMode === "peak" ? " selected" : ""}>峰值到 0 dB</option>
+        <option value="frequency"${state.waterfallView.sliceNormalizeMode === "frequency" ? " selected" : ""}>当前频点到 0 dB</option>
+        <option value="band"${state.waterfallView.sliceNormalizeMode === "band" ? " selected" : ""}>500 Hz - 2 kHz 到 0 dB</option>
+        <option value="reference"${state.waterfallView.sliceNormalizeMode === "reference" ? " selected" : ""}>相对第一条 IR</option>
+      </select>
+      <strong>${getWaterfallSliceNormalizeShortLabel(state.waterfallView.sliceNormalizeMode)}</strong>
+    </div>
+    <div class="waterfall-control waterfall-control--select">
+      <label for="waterfallTimeSampling">时间采样</label>
+      <select id="waterfallTimeSampling" data-waterfall-setting="timeSampling" aria-label="瀑布图时间采样">
+        <option value="frontDense"${state.waterfallView.timeSampling === "linear" ? "" : " selected"}>前密后稀</option>
+        <option value="linear"${state.waterfallView.timeSampling === "linear" ? " selected" : ""}>均匀 3 ms</option>
+      </select>
+      <strong>${getWaterfallTimeSamplingShortLabel(state.waterfallView.timeSampling)}</strong>
+    </div>
+    <label class="analysis-check">
+      <input type="checkbox" data-waterfall-setting="showSliceCurves" ${state.waterfallView.showSliceCurves === false ? "" : "checked"}>
+      <span>显示切片曲线</span>
+    </label>
+    <label class="analysis-check">
+      <input type="checkbox" data-waterfall-setting="showWaterfallTooltips" ${state.waterfallView.showWaterfallTooltips === false ? "" : "checked"}>
+      <span>显示 Tooltips</span>
+    </label>
     <label class="waterfall-control">
       <span>动态范围</span>
       <input type="range" min="18" max="${dbRangeLimit}" step="1" value="${state.waterfallView.dbRange}" data-waterfall-setting="dbRange">
@@ -4023,6 +4798,36 @@ function renderWaterfallControls() {
         render();
         return;
       }
+      if (key === "sliceNormalizeMode") {
+        state.waterfallView.sliceNormalizeMode = ["off", "peak", "frequency", "band", "reference"].includes(event.target.value)
+          ? event.target.value
+          : "off";
+        event.target.nextElementSibling.textContent = getWaterfallSliceNormalizeShortLabel(state.waterfallView.sliceNormalizeMode);
+        drawCurrentChartView();
+        renderMetrics();
+        return;
+      }
+      if (key === "timeSampling") {
+        state.waterfallView.timeSampling = event.target.value === "linear" ? "linear" : "frontDense";
+        event.target.nextElementSibling.textContent = getWaterfallTimeSamplingShortLabel(state.waterfallView.timeSampling);
+        for (const impulse of state.impulseResponses) {
+          impulse.waterfallCache = null;
+          impulse.waterfallCacheKey = "";
+        }
+        waterfallRenderer?.clear();
+        render();
+        return;
+      }
+      if (key === "showSliceCurves" || key === "showWaterfallTooltips") {
+        state.waterfallView[key] = event.target.checked;
+        if (key === "showWaterfallTooltips" && !state.waterfallView.showWaterfallTooltips) {
+          chartTooltip.classList.remove("is-visible");
+          chartTooltip.hidden = true;
+          tooltipPosition = null;
+        }
+        drawCurrentChartView();
+        return;
+      }
       state.waterfallView[key] = Number(event.target.value);
       if (key === "dbRange") state.waterfallView.dbRange = clamp(state.waterfallView.dbRange, 18, dbRangeLimit);
       if (key === "sliceCount") state.waterfallView.sliceCount = clamp(Math.round(state.waterfallView.sliceCount), 20, 501);
@@ -4037,7 +4842,7 @@ function renderWaterfallControls() {
       drawChart();
       renderMetrics();
     };
-    input.addEventListener(input.tagName === "SELECT" ? "change" : "input", handleWaterfallSetting);
+    input.addEventListener(input.type === "checkbox" || input.tagName === "SELECT" ? "change" : "input", handleWaterfallSetting);
   });
 
   panel.querySelector(".reset-waterfall-view").addEventListener("click", () => {
@@ -4066,29 +4871,26 @@ function renderDistortionCurveControls() {
 }
 
 function renderControls() {
+  if (!["frequency", "groupDelay"].includes(state.analysisMode)) state.analysisMode = "frequency";
   mode.value = state.mode;
   syncAnalysisModeSwitch();
   workspace?.classList.toggle("is-distortion-mode", state.distortionMode);
   document.body.classList.toggle("is-distortion-mode", state.distortionMode);
-  document.body.classList.toggle("is-impulse-mode", !state.distortionMode && state.analysisMode === "impulse");
+  document.body.classList.toggle("is-impulse-mode", false);
   document.body.classList.toggle("is-group-delay-mode", !state.distortionMode && state.analysisMode === "groupDelay");
-  document.body.classList.toggle("is-waterfall-mode", !state.distortionMode && state.analysisMode === "waterfall");
+  document.body.classList.toggle("is-waterfall-mode", false);
   canvasWrap.classList.toggle("is-distortion-mode", state.distortionMode);
   if (sidebarTitle) {
     const sidebarTitles = {
       frequency: "曲线",
-      groupDelay: "群延迟",
-      impulse: "IR 分析",
-      waterfall: "瀑布图"
+      groupDelay: "群延迟"
     };
     sidebarTitle.textContent = state.distortionMode ? "失真曲线" : sidebarTitles[state.analysisMode];
   }
   if (sidebarHint) {
     sidebarHint.textContent = state.distortionMode
       ? "失真模式支持 REW 导出的 THD 文本文件；可控制 THD、Noise 与各阶谐波的显隐和颜色。"
-      : state.analysisMode === "impulse" || state.analysisMode === "waterfall"
-        ? "IR 分析和瀑布图使用 REW 导出的 Impulse Response 文本文件。"
-        : state.analysisMode === "groupDelay"
+      : state.analysisMode === "groupDelay"
           ? "群延迟由带相位列的频响数据计算，使用相位随频率变化的斜率。"
           : "CSV 支持 frequency_hz, level_db 表头，也支持逗号、Tab、分号或空格分隔的两列数字。频率轴使用对数坐标。";
   }
@@ -4100,9 +4902,7 @@ function renderControls() {
     curveFilesButton.hidden = false;
     curveFilesButton.childNodes[0].nodeValue = state.distortionMode
       ? "导入失真"
-      : state.analysisMode === "impulse" || state.analysisMode === "waterfall"
-        ? "导入 IR"
-        : "导入曲线";
+      : "导入曲线";
   }
   if (targetFileButton) targetFileButton.hidden = state.distortionMode || state.analysisMode !== "frequency";
   if (distortionAnalysisRange) {
@@ -4269,26 +5069,13 @@ function renderMetrics() {
   const groupDelaySeries = state.analysisMode === "groupDelay"
     ? makeGroupDelaySeries(state.curves, { getData: (curve) => displayData(curve, { applyTilt: false, applyOffset: false }) })
     : [];
-  const visibleWaterfallImpulse = state.analysisMode === "waterfall"
-    ? state.impulseResponses.find((item) => item.visible !== false)
-    : null;
   const analysisItems = {
     frequency: getDeviationSummaryItems(),
-    groupDelay: getGroupDelaySummaryItems(groupDelaySeries, { minFreq, maxFreq }),
-    impulse: getImpulseSummaryItems(state.impulseResponses),
-    waterfall: getWaterfallSummaryItems(state.impulseResponses, {
-      view: state.waterfallView,
-      waterfall: visibleWaterfallImpulse ? getWaterfallForImpulse(visibleWaterfallImpulse) : null,
-      effectiveMaxTimeMs: visibleWaterfallImpulse
-        ? getEffectiveWaterfallTimeMs(getWaterfallForImpulse(visibleWaterfallImpulse), state.waterfallView.dbRange)
-        : null
-    })
+    groupDelay: getGroupDelaySummaryItems(groupDelaySeries, { minFreq, maxFreq })
   };
   const analysisTitles = {
     frequency: "偏差摘要",
-    groupDelay: "群延迟分析",
-    impulse: "IR 分析",
-    waterfall: "瀑布图分析"
+    groupDelay: "群延迟分析"
   };
 
   setMetricItems(
@@ -4316,7 +5103,7 @@ function setMineCartAnimationEnabled(enabled) {
 }
 
 function setAnalysisView(view) {
-  const normalizedView = ["frequency", "distortion", "impulse", "groupDelay", "waterfall"].includes(view)
+  const normalizedView = AVAILABLE_ANALYSIS_VIEWS.includes(view)
     ? view
     : "frequency";
   state.distortionMode = normalizedView === "distortion";
@@ -4360,9 +5147,11 @@ function renderTitle() {
 
   if (state.analysisMode === "impulse") {
     const visible = state.impulseResponses.filter((impulse) => impulse.visible !== false);
+    const impulseView = normalizeImpulseView(state.impulseView);
+    const modeText = impulseView.displayMode === "spl" ? "SPL 脉冲分析" : "时域脉冲响应";
     document.getElementById("chartTitle").textContent = "IR 分析";
     document.getElementById("chartSubtitle").textContent = visible.length
-      ? `${visible.length === 1 ? visible[0].name : `${visible.length} 组 IR`} / -5 至 120 ms / 时域脉冲响应`
+      ? `${visible.length === 1 ? visible[0].name : `${visible.length} 组 IR`} / -${impulseView.beforeMs} 至 ${impulseView.afterMs} ms / ${modeText}`
       : "导入 REW Impulse Response 文本文件";
     return;
   }
@@ -4371,7 +5160,7 @@ function renderTitle() {
     const visible = state.impulseResponses.filter((impulse) => impulse.visible !== false);
     document.getElementById("chartTitle").textContent = "三维瀑布图";
     document.getElementById("chartSubtitle").textContent = visible.length
-      ? `${visible[0].name} / 20 Hz - 20 kHz / 101 帧 WebGL 衰减表面`
+      ? `${visible.length === 1 ? visible[0].name : `${visible.length} 组 IR`} / 20 Hz - 20 kHz / ${state.waterfallView.sliceCount ?? 101} 帧 WebGL 衰减表面`
       : "导入 REW Impulse Response 文本文件";
     return;
   }
@@ -4759,6 +5548,10 @@ function panChart(deltaX, deltaY) {
     panDistortionChart(deltaX, deltaY);
     return;
   }
+  if (chartView.isImpulse) {
+    panImpulseChart(deltaX);
+    return;
+  }
 
   const { minFreq, maxFreq, minDb, maxDb, plotW, plotH } = chartView;
   const minLog = Math.log2(minFreq);
@@ -4781,6 +5574,10 @@ function zoomChart(factor, mouseX, mouseY) {
   if (!chartView) return;
   if (chartView.isDistortion) {
     zoomDistortionChart(factor, mouseX, mouseY);
+    return;
+  }
+  if (chartView.isImpulse) {
+    zoomImpulseChart(factor, mouseX);
     return;
   }
 
@@ -4806,6 +5603,77 @@ function zoomChart(factor, mouseX, mouseY) {
   hideTooltip();
   renderTitle();
   drawChart();
+}
+
+function panImpulseChart(deltaX) {
+  const { plotW, minTime, maxTime } = chartView;
+  if (!plotW || !Number.isFinite(minTime) || !Number.isFinite(maxTime)) return;
+  const span = maxTime - minTime;
+  const shiftMs = (deltaX / plotW) * span;
+  setImpulseTimeWindow(minTime + shiftMs, maxTime + shiftMs);
+  hideTooltip();
+  renderTitle();
+  renderMetrics();
+  syncImpulseControlsFromState();
+  drawChart();
+}
+
+function zoomImpulseChart(factor, mouseX) {
+  const { pad, plotW, minTime, maxTime } = chartView;
+  if (!plotW || !Number.isFinite(minTime) || !Number.isFinite(maxTime)) return;
+  const xRatio = clamp((mouseX - pad.left) / plotW, 0, 1);
+  const span = maxTime - minTime;
+  const nextSpan = clamp(span * factor, 21, 550);
+  const focalTime = minTime + xRatio * span;
+  const nextMin = focalTime - xRatio * nextSpan;
+  const nextMax = nextMin + nextSpan;
+  setImpulseTimeWindow(nextMin, nextMax);
+  hideTooltip();
+  renderTitle();
+  renderMetrics();
+  syncImpulseControlsFromState();
+  drawChart();
+}
+
+function setImpulseTimeWindow(minTime, maxTime) {
+  const span = clamp(maxTime - minTime, 21, 550);
+  let nextMin = minTime;
+  let nextMax = minTime + span;
+
+  if (nextMin < -50) {
+    nextMin = -50;
+    nextMax = nextMin + span;
+  }
+  if (nextMax > 500) {
+    nextMax = 500;
+    nextMin = nextMax - span;
+  }
+  if (nextMin > -1) {
+    nextMin = -1;
+    nextMax = nextMin + span;
+  }
+  if (nextMax < 20) {
+    nextMax = 20;
+    nextMin = nextMax - span;
+  }
+
+  state.impulseView.beforeMs = clamp(-nextMin, 1, 50);
+  state.impulseView.afterMs = clamp(nextMax, 20, 500);
+  state.impulseView = normalizeImpulseView(state.impulseView);
+}
+
+function syncImpulseControlsFromState() {
+  if (state.analysisMode !== "impulse") return;
+  const panel = curveList.querySelector(".impulse-tools");
+  if (!panel) return;
+
+  for (const key of ["beforeMs", "afterMs"]) {
+    const input = panel.querySelector(`[data-impulse-setting='${key}']`);
+    if (!input) continue;
+    input.value = String(state.impulseView[key]);
+    input.nextElementSibling.textContent = `${state.impulseView[key].toFixed(0)} ms`;
+  }
+  syncImpulseAnalysisWindowInputs(panel);
 }
 
 function panDistortionChart(deltaX, deltaY) {

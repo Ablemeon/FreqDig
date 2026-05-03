@@ -734,7 +734,8 @@ button.is-active {
 
 .analysis-mode-switch {
   display: inline-grid;
-  grid-template-columns: repeat(5, minmax(52px, auto));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(52px, max-content);
   align-items: center;
   gap: 3px;
   flex: 0 0 auto;
@@ -1564,7 +1565,7 @@ canvas.is-dragging {
 
 .chart-tooltip {
   position: absolute;
-  z-index: 2;
+  z-index: 12;
   min-width: 210px;
   max-width: 320px;
   padding: 8px 10px;
@@ -2160,6 +2161,53 @@ canvas.is-dragging {
 
 .analysis-check input {
   flex: 0 0 auto;
+}
+
+.analysis-disclosure {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(132, 154, 168, 0.08);
+}
+
+.analysis-disclosure summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.analysis-disclosure .analysis-check {
+  min-height: 26px;
+  margin-top: 6px;
+}
+
+.impulse-display-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(132, 154, 168, 0.1);
+}
+
+.impulse-display-toggle button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.impulse-display-toggle button.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 5px 14px rgba(0, 114, 178, 0.18);
 }
 
 .analysis-button-grid {
